@@ -74,8 +74,7 @@ class DocxAdapter(ArtifactAdapter):
         lines: list[str] = []
 
         for paragraph in root.findall(".//w:p", ns):
-            text_runs = [node.text for node in paragraph.findall(".//w:t", ns) if node.text]
-            line = "".join(text_runs).strip()
+            line = "".join([node.text for node in paragraph.findall(".//w:t", ns) if node.text]).strip()
             if line:
                 lines.append(line)
 

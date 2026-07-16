@@ -75,7 +75,7 @@ class TestDocxAdapter(unittest.TestCase):
             unsupported = Path(tempfile.gettempdir()) / "not-supported.txt"
             ArtifactParser().parse(str(unsupported))
 
-    def test_suffix_question_is_captured_without_prefix(self) -> None:
+    def test_entity_question_captured_without_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             docx_path = Path(td) / "schema.docx"
             _write_docx(
