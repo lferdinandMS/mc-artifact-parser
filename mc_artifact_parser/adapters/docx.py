@@ -108,7 +108,7 @@ class DocxAdapter(ArtifactAdapter):
 
         name, paren_type, colon_type, trailing = match.groups()
         lowered = line.lower()
-        data_type = (paren_type or colon_type)
+        data_type = paren_type or colon_type
         nullable = None
         if "not null" in lowered or "required" in lowered:
             nullable = False
