@@ -1,40 +1,62 @@
 from __future__ import annotations
 
 import re
-import zipfile
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
 from mc_artifact_parser.adapters.base import ArtifactAdapter
 from mc_artifact_parser.models import ArtifactParseResult, ColumnSchema, EntitySchema
 
 
-class DocxAdapter(ArtifactAdapter):
-    # Supported section markers in DOCX paragraph text:
-    # - Entity/table headers: "Entity: Name" / "Table: Name"
-    # - Explicit open questions: "Open Question: ..."
-    # - Related entities lists: "Related Entities: A, B"
+class MarkdownAdapter(ArtifactAdapter):
+    """Parse ``.md`` files for schema intent.
+
+    Recognised document conventions
+    --------------------------------
+    * ``## Entity Name`` or ``## Entity: Entity Name`` — starts a new entity
+      (H2–H6 headings; a lone H1 is treated as a document title and skipped).
+    * Bullet-list lines (``-``, ``*``, ``•``) — column definitions or questions.
+    * ``Related Entities: A, B`` — explicit relationship list.
+    * ``Open Question: …`` prefix or lines ending in ``?`` — open questions.
+    """
+
     _ENTITY_HEADER = re.compile(r"^(?:entity|table)\s*[:\-]\s*(.+)$", re.IGNORECASE)
     _OPEN_QUESTION_PREFIX = re.compile(r"^open\s*question\s*[:\-]\s*(.+)$", re.IGNORECASE)
     _RELATED_PREFIX = re.compile(r"^related\s*entities?\s*[:\-]\s*(.+)$", re.IGNORECASE)
     _COLUMN_PATTERN = re.compile(
         r"^([A-Za-z_][\w]*)\s*(?:\(([^)]+)\)|:\s*([A-Za-z_][\w()\[\],\s]*))?\s*(.*)$"
     )
-    _MAX_DOCUMENT_XML_BYTES = 10 * 1024 * 1024
+    _MAX_FILE_BYTES = 10 * 1024 * 1024
 
     def can_parse(self, path: str) -> bool:
-        return Path(path).suffix.lower() == ".docx"
+        return Path(path).suffix.lower() == ".md"
 
     def parse(self, path: str) -> ArtifactParseResult:
         lines = self._extract_lines(path)
-        result = ArtifactParseResult(source_path=path, artifact_type="docx")
+        result = ArtifactParseResult(source_path=path, artifact_type="markdown")
         current_entity: EntitySchema | None = None
 
         for raw_line in lines:
-            line = self._normalize_line(raw_line)
+            stripped = raw_line.strip()
+
+            # H2–H6 headings start a new entity.
+            heading_match = re.match(r"^(#{2,6})\s+(.+)$", stripped)
+            if heading_match:
+                heading_text = heading_match.group(2).strip()
+                explicit = self._ENTITY_HEADER.match(heading_text)
+                entity_name = explicit.group(1).strip() if explicit else heading_text
+                current_entity = EntitySchema(name=entity_name, implied_tables=[entity_name])
+                result.entities.append(current_entity)
+                continue
+
+            # H1 headings are treated as document titles — skip.
+            if re.match(r"^#\s+", stripped):
+                continue
+
+            line = self._normalize_line(stripped)
             if not line:
                 continue
 
+            # Non-heading "Entity: Name" / "Table: Name" lines also start an entity.
             entity_match = self._ENTITY_HEADER.match(line)
             if entity_match:
                 entity_name = entity_match.group(1).strip()
@@ -71,42 +93,23 @@ class DocxAdapter(ArtifactAdapter):
         return result
 
     def _extract_lines(self, path: str) -> list[str]:
-        with zipfile.ZipFile(path) as archive:
-            try:
-                document_xml = archive.getinfo("word/document.xml")
-            except KeyError as exc:
-                raise ValueError(f"{path} is missing word/document.xml") from exc
-
-            if document_xml.file_size > self._MAX_DOCUMENT_XML_BYTES:
-                raise ValueError("DOCX word/document.xml exceeds the maximum supported size.")
-
-            xml = archive.read(document_xml)
-
-        if b"<!DOCTYPE" in xml or b"<!ENTITY" in xml:
-            raise ValueError("DOCX word/document.xml contains disallowed XML declarations.")
-
-        root = ET.fromstring(xml)
-        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-        lines: list[str] = []
-
-        for paragraph in root.findall(".//w:p", ns):
-            line = "".join(node.text for node in paragraph.findall(".//w:t", ns) if node.text).strip()
-            if line:
-                lines.append(line)
-
-        return lines
+        file_path = Path(path)
+        if file_path.stat().st_size > self._MAX_FILE_BYTES:
+            raise ValueError("Markdown file exceeds the maximum supported size.")
+        return file_path.read_text(encoding="utf-8").splitlines()
 
     def _normalize_line(self, line: str) -> str:
-        return re.sub(r"^[\-\*•]\s*", "", line.strip())
+        line = re.sub(r"^[\-\*•]\s*", "", line.strip())
+        # Strip inline bold/italic markers so "**Related Entities**:" is recognised.
+        line = re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", line)
+        return line.strip()
 
     def _extract_question(self, line: str) -> str | None:
         prefix_match = self._OPEN_QUESTION_PREFIX.match(line)
         if prefix_match:
             return prefix_match.group(1).strip()
-
         if line.endswith("?"):
             return line
-
         return None
 
     def _add_related_entities(self, entity: EntitySchema, related_text: str) -> None:
@@ -116,7 +119,6 @@ class DocxAdapter(ArtifactAdapter):
                 self._append_unique(entity.related_entities, clean)
 
     def _parse_column(self, line: str) -> ColumnSchema | None:
-        # Regex capture groups: 1=column name, 2=type in parentheses, 3=type after colon, 4=trailing metadata.
         match = self._COLUMN_PATTERN.match(line)
         if not match:
             return None

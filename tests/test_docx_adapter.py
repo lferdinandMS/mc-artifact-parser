@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 import zipfile
+from html import escape as html_escape
 from pathlib import Path
 
 from mc_artifact_parser import ArtifactParser
@@ -9,7 +10,7 @@ from mc_artifact_parser.adapters.docx import DocxAdapter
 
 def _docx_xml(paragraphs: list[str]) -> str:
     body = "".join(
-        f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>" for text in paragraphs
+        f"<w:p><w:r><w:t>{html_escape(text)}</w:t></w:r></w:p>" for text in paragraphs
     )
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -106,6 +107,33 @@ class TestDocxAdapter(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "maximum supported size"):
                 ArtifactParser().parse(str(docx_path))
+
+    def test_rejects_doctype_declaration(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            docx_path = Path(td) / "schema.docx"
+            malicious_xml = (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                '<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+                '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                "<w:body><w:p><w:r><w:t>Test</w:t></w:r></w:p></w:body>"
+                "</w:document>"
+            )
+            with zipfile.ZipFile(docx_path, "w") as zf:
+                zf.writestr("word/document.xml", malicious_xml)
+
+            with self.assertRaisesRegex(ValueError, "disallowed XML declarations"):
+                ArtifactParser().parse(str(docx_path))
+
+    def test_docx_xml_helper_escapes_special_chars(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            docx_path = Path(td) / "schema.docx"
+            _write_docx(docx_path, ["Entity: Catalog", "name: varchar & notes < 100 chars"])
+
+            result = ArtifactParser().parse(str(docx_path))
+
+        self.assertEqual(result.entities[0].name, "Catalog")
+        # Column with special chars in trailing metadata is still parsed
+        self.assertEqual(result.entities[0].columns[0].name, "name")
 
 
 if __name__ == "__main__":

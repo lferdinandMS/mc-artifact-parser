@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from mc_artifact_parser.adapters.base import ArtifactAdapter
 from mc_artifact_parser.adapters.docx import DocxAdapter
+from mc_artifact_parser.adapters.markdown import MarkdownAdapter
 from mc_artifact_parser.models import ArtifactParseResult
 
 
 class ArtifactParser:
     def __init__(self, adapters: list[ArtifactAdapter] | None = None) -> None:
-        self._adapters = adapters or [DocxAdapter()]
+        self._adapters = [DocxAdapter(), MarkdownAdapter()] if adapters is None else adapters
 
     def parse(self, path: str) -> ArtifactParseResult:
         for adapter in self._adapters:
