@@ -10,6 +10,10 @@ from mc_artifact_parser.models import ArtifactParseResult, ColumnSchema, EntityS
 
 
 class DocxAdapter(ArtifactAdapter):
+    # Supported section markers in DOCX paragraph text:
+    # - Entity/table headers: "Entity: Name" / "Table: Name"
+    # - Explicit open questions: "Open Question: ..."
+    # - Related entities lists: "Related Entities: A, B"
     _ENTITY_HEADER = re.compile(r"^(?:entity|table)\s*[:\-]\s*(.+)$", re.IGNORECASE)
     _OPEN_QUESTION_PREFIX = re.compile(r"^open\s*question\s*[:\-]\s*(.+)$", re.IGNORECASE)
     _RELATED_PREFIX = re.compile(r"^related\s*entities?\s*[:\-]\s*(.+)$", re.IGNORECASE)
@@ -74,7 +78,7 @@ class DocxAdapter(ArtifactAdapter):
         lines: list[str] = []
 
         for paragraph in root.findall(".//w:p", ns):
-            line = "".join([node.text for node in paragraph.findall(".//w:t", ns) if node.text]).strip()
+            line = "".join(node.text for node in paragraph.findall(".//w:t", ns) if node.text).strip()
             if line:
                 lines.append(line)
 
@@ -116,8 +120,8 @@ class DocxAdapter(ArtifactAdapter):
 
         primary_key = bool(re.search(r"\b(primary\s+key|pk)\b", lowered))
 
-        has_structure_signal = bool(data_type or nullable is not None or primary_key or trailing.strip())
-        if not has_structure_signal:
+        looks_like_column_definition = bool(data_type or nullable is not None or primary_key or trailing.strip())
+        if not looks_like_column_definition:
             return None
 
         return ColumnSchema(
