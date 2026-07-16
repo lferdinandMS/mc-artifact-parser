@@ -42,12 +42,20 @@ class TestUnityCatalogAdapter(unittest.TestCase):
         self.assertEqual(adapter._map_type(None), "STRING")
         self.assertEqual(adapter._map_type("unknown_type"), "STRING")
 
-    def test_snake_case_conversion(self) -> None:
-        adapter = UnityCatalogAdapter()
-        self.assertEqual(adapter._to_snake_case("CustomerOrder"), "customer_order")
-        self.assertEqual(adapter._to_snake_case("Customer"), "customer")
-        self.assertEqual(adapter._to_snake_case("Order"), "order")
-        self.assertEqual(adapter._to_snake_case("SalesOrder"), "sales_order")
+    def test_snake_case_table_names_in_ddl(self) -> None:
+        entities = [
+            EntitySchema(
+                name="CustomerOrder",
+                columns=[ColumnSchema(name="id", data_type="int", primary_key=True)],
+            ),
+            EntitySchema(
+                name="SalesOrder",
+                columns=[ColumnSchema(name="id", data_type="int", primary_key=True)],
+            ),
+        ]
+        ddl = UnityCatalogAdapter().render(_result_with_entities(*entities))
+        self.assertIn("CREATE TABLE IF NOT EXISTS customer_order", ddl)
+        self.assertIn("CREATE TABLE IF NOT EXISTS sales_order", ddl)
 
     def test_multiple_entities_separated_by_blank_line(self) -> None:
         entities = [

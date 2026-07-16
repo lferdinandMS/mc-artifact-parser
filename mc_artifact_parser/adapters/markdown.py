@@ -25,6 +25,10 @@ class MarkdownAdapter(ArtifactAdapter):
     _COLUMN_PATTERN = re.compile(
         r"^([A-Za-z_][\w]*)\s*(?:\(([^)]+)\)|:\s*([A-Za-z_][\w()\[\],\s]*))?\s*(.*)$"
     )
+    _REFERENCE_PATTERNS = (
+        re.compile(r"\breferences\s+([A-Za-z_][\w]*)", re.IGNORECASE),
+        re.compile(r"\bforeign\s+key\s+to\s+([A-Za-z_][\w]*)", re.IGNORECASE),
+    )
     _MAX_FILE_BYTES = 10 * 1024 * 1024
 
     def can_parse(self, path: str) -> bool:
@@ -147,8 +151,8 @@ class MarkdownAdapter(ArtifactAdapter):
 
     def _extract_reference_entities(self, line: str) -> list[str]:
         refs = []
-        for pattern in (r"\breferences\s+([A-Za-z_][\w]*)", r"\bforeign\s+key\s+to\s+([A-Za-z_][\w]*)"):
-            refs.extend(re.findall(pattern, line, flags=re.IGNORECASE))
+        for pattern in self._REFERENCE_PATTERNS:
+            refs.extend(pattern.findall(line))
         return refs
 
     def _extract_implied_tables(self, line: str) -> list[str]:
