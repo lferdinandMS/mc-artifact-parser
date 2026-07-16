@@ -112,10 +112,10 @@ class DocxAdapter(ArtifactAdapter):
         name, paren_type, colon_type, trailing = match.groups()
         lowered = line.lower()
         data_type = paren_type or colon_type
-        nullable = None
-        if "not null" in lowered or "required" in lowered:
+        nullable: bool | None = None
+        if re.search(r"\b(not\s+null|required|not\s+nullable|non[-\s]?nullable)\b", lowered):
             nullable = False
-        elif "nullable" in lowered or "optional" in lowered or "null allowed" in lowered:
+        elif re.search(r"\b(nullable|optional|null\s+allowed)\b", lowered):
             nullable = True
 
         primary_key = bool(re.search(r"\b(primary\s+key|pk)\b", lowered))
