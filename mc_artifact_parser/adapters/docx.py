@@ -20,6 +20,7 @@ class DocxAdapter(ArtifactAdapter):
     _COLUMN_PATTERN = re.compile(
         r"^([A-Za-z_][\w]*)\s*(?:\(([^)]+)\)|:\s*([A-Za-z_][\w()\[\],\s]*))?\s*(.*)$"
     )
+    _MAX_DOCUMENT_XML_BYTES = 10 * 1024 * 1024
 
     def can_parse(self, path: str) -> bool:
         return Path(path).suffix.lower() == ".docx"
@@ -72,9 +73,14 @@ class DocxAdapter(ArtifactAdapter):
     def _extract_lines(self, path: str) -> list[str]:
         with zipfile.ZipFile(path) as archive:
             try:
-                xml = archive.read("word/document.xml")
+                document_xml = archive.getinfo("word/document.xml")
             except KeyError as exc:
                 raise ValueError(f"{path} is missing word/document.xml") from exc
+
+            if document_xml.file_size > self._MAX_DOCUMENT_XML_BYTES:
+                raise ValueError("DOCX word/document.xml exceeds the maximum supported size.")
+
+            xml = archive.read(document_xml)
 
         root = ET.fromstring(xml)
         ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}

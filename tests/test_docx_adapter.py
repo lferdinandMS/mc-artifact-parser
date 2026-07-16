@@ -4,6 +4,7 @@ import zipfile
 from pathlib import Path
 
 from mc_artifact_parser import ArtifactParser
+from mc_artifact_parser.adapters.docx import DocxAdapter
 
 
 def _docx_xml(paragraphs: list[str]) -> str:
@@ -90,6 +91,21 @@ class TestDocxAdapter(unittest.TestCase):
 
         self.assertEqual(result.open_questions, [])
         self.assertEqual(result.entities[0].open_questions, ["Do we support international suppliers?"])
+
+    def test_rejects_oversized_document_xml(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            docx_path = Path(td) / "schema.docx"
+            oversized_xml = (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                f"<w:body><w:p><w:r><w:t>{'x' * DocxAdapter._MAX_DOCUMENT_XML_BYTES}</w:t></w:r></w:p></w:body>"
+                "</w:document>"
+            )
+            with zipfile.ZipFile(docx_path, "w") as zf:
+                zf.writestr("word/document.xml", oversized_xml)
+
+            with self.assertRaisesRegex(ValueError, "maximum supported size"):
+                ArtifactParser().parse(str(docx_path))
 
 
 if __name__ == "__main__":
