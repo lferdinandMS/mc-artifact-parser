@@ -71,7 +71,10 @@ class DocxAdapter(ArtifactAdapter):
 
     def _extract_lines(self, path: str) -> list[str]:
         with zipfile.ZipFile(path) as archive:
-            xml = archive.read("word/document.xml")
+            try:
+                xml = archive.read("word/document.xml")
+            except KeyError as exc:
+                raise ValueError(f"{path} is missing word/document.xml") from exc
 
         root = ET.fromstring(xml)
         ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
