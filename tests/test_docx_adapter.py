@@ -30,6 +30,7 @@ class TestDocxAdapter(unittest.TestCase):
             _write_docx(
                 docx_path,
                 [
+                    "Any global concern?",
                     "Entity: Customer",
                     "- customer_id (int) not null primary key",
                     "- email (varchar) nullable",
@@ -46,6 +47,7 @@ class TestDocxAdapter(unittest.TestCase):
             result = ArtifactParser().parse(str(docx_path))
 
         self.assertEqual(result.artifact_type, "docx")
+        self.assertEqual(result.open_questions, ["Any global concern?"])
         self.assertEqual(len(result.entities), 2)
 
         customer = result.entities[0]

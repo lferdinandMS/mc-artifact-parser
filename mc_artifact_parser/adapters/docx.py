@@ -101,7 +101,7 @@ class DocxAdapter(ArtifactAdapter):
                 self._append_unique(entity.related_entities, clean)
 
     def _parse_column(self, line: str) -> ColumnSchema | None:
-        # Capture groups: 1=column name, 2=type in parentheses, 3=type after colon, 4=trailing metadata.
+        # Regex capture groups: 1=column name, 2=type in parentheses, 3=type after colon, 4=trailing metadata.
         match = self._COLUMN_PATTERN.match(line)
         if not match:
             return None
