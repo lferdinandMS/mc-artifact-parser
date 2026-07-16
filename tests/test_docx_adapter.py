@@ -70,7 +70,8 @@ class TestDocxAdapter(unittest.TestCase):
 
     def test_unsupported_extension_raises(self) -> None:
         with self.assertRaises(ValueError):
-            ArtifactParser().parse("/tmp/not-supported.txt")
+            unsupported = Path(tempfile.gettempdir()) / "not-supported.txt"
+            ArtifactParser().parse(str(unsupported))
 
 
 if __name__ == "__main__":

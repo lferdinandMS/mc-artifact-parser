@@ -13,6 +13,9 @@ class DocxAdapter(ArtifactAdapter):
     _ENTITY_HEADER = re.compile(r"^(?:entity|table)\s*[:\-]\s*(.+)$", re.IGNORECASE)
     _OPEN_QUESTION_PREFIX = re.compile(r"^open\s*question\s*[:\-]\s*(.+)$", re.IGNORECASE)
     _RELATED_PREFIX = re.compile(r"^related\s*entities?\s*[:\-]\s*(.+)$", re.IGNORECASE)
+    _COLUMN_PATTERN = re.compile(
+        r"^([A-Za-z_][\w]*)\s*(?:\(([^)]+)\)|:\s*([A-Za-z_][\w()\[\],\s]*))?\s*(.*)$"
+    )
 
     def can_parse(self, path: str) -> bool:
         return Path(path).suffix.lower() == ".docx"
@@ -98,10 +101,8 @@ class DocxAdapter(ArtifactAdapter):
                 self._append_unique(entity.related_entities, clean)
 
     def _parse_column(self, line: str) -> ColumnSchema | None:
-        match = re.match(
-            r"^([A-Za-z_][\w]*)\s*(?:\(([^)]+)\)|:\s*([A-Za-z_][\w()\[\],\s]*))?\s*(.*)$",
-            line,
-        )
+        # Capture groups: 1=column name, 2=type in parentheses, 3=type after colon, 4=trailing metadata.
+        match = self._COLUMN_PATTERN.match(line)
         if not match:
             return None
 
