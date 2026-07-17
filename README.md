@@ -8,6 +8,7 @@ This repository includes a generalized Python artifact parser with pluggable ada
 Current adapter support:
 - DOCX (`.docx`)
 - Markdown (`.md`)
+- Images (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.gif`, `.tif`, `.tiff`, `.webp`) via OCR
 
 ### Parse a schema artifact
 
@@ -27,6 +28,33 @@ Markdown files are parsed the same way — H2–H6 headings are treated as entit
 
 ```python
 result = ArtifactParser().parse("/path/to/schema.md")
+```
+
+Image files are parsed through OCR first, then processed with the same schema rules:
+
+```python
+result = ArtifactParser().parse("/path/to/schema.png")
+```
+
+For image parsing, install an OCR engine such as Tesseract. If you want to plug in
+your own OCR pipeline, pass a custom text extractor to `ImageAdapter`.
+
+### Accumulate multiple inputs before rendering outputs
+
+Use `SchemaWorkbench` when you want to add several documents or images over time,
+check completeness, and then render a data dictionary or ERD once you are ready:
+
+```python
+from mc_artifact_parser import SchemaWorkbench
+
+workbench = SchemaWorkbench()
+workbench.add("/path/to/customer.png")
+workbench.add("/path/to/order.png")
+
+print(workbench.completeness_issues)
+print(workbench.generated_open_questions)
+print(workbench.build_data_dictionary())
+print(workbench.build_erd())
 ```
 
 ---
