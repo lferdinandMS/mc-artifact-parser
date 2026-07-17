@@ -11,12 +11,7 @@ from docx_schema.mapping import (
     group_column_sets,
     render_mapping_markdown,
 )
-from docx_schema.models import TARGET_COLUMNS, ColumnSet, SourceTable
-from docx_schema.schema import (
-    extract_column_set,
-    parse_mapping_markdown,
-    render_extract_markdown,
-)
+from docx_schema.models import TARGET_COLUMNS, SourceTable
 
 _W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
@@ -80,7 +75,7 @@ class BuildSourceTablesTests(unittest.TestCase):
 
 
 class CrosswalkTests(unittest.TestCase):
-    def test_auto_matches_synonyms(self) -> None:
+    def test_proposes_target_mapping(self) -> None:
         table = SourceTable(
             name="Customer",
             headers=["Field", "Type", "Required", "Purpose"],
@@ -93,6 +88,8 @@ class CrosswalkTests(unittest.TestCase):
         self.assertEqual(pairs["DataType"], "Type")
         self.assertEqual(pairs["Nullable(Y/N)"], "Required")
         self.assertEqual(pairs["Description"], "Purpose")
+        # Targets with no match stay empty.
+        self.assertEqual(pairs["Primary Key (Y/N)"], "")
 
     def test_unmatched_headers_listed_with_empty_target(self) -> None:
         table = SourceTable(
@@ -124,6 +121,7 @@ class CrosswalkTests(unittest.TestCase):
         self.assertIn("|Type|DataType|", md)
         self.assertIn("|Required|Nullable(Y/N)|", md)
         self.assertIn("|Purpose|Description|", md)
+        self.assertIn("||Primary Key (Y/N)|", md)
 
     def test_identical_headers_group_together(self) -> None:
         headers = ["Field", "Type"]
@@ -136,78 +134,8 @@ class CrosswalkTests(unittest.TestCase):
         self.assertEqual(column_sets[0].table_names, ["A", "B"])
 
 
-class ParseMappingTests(unittest.TestCase):
-    def test_parses_pairs_skipping_header_and_divider(self) -> None:
-        mapping_md = (
-            "## Column Set 1\n\n"
-            "- Tables: Customer\n\n"
-            "|Extracted Column|Target Column|\n"
-            "|---------------|-------------|\n"
-            "|Field|Column|\n"
-            "|Type|DataType|\n"
-            "||Description|\n"
-        )
-        column_sets = parse_mapping_markdown(mapping_md)
-        self.assertEqual(len(column_sets), 1)
-        cs = column_sets[0]
-        self.assertEqual(cs.table_names, ["Customer"])
-        self.assertIn(("Field", "Column"), cs.pairs)
-        self.assertIn(("Type", "DataType"), cs.pairs)
-        self.assertEqual(cs.target_to_extracted(), {"Column": "Field", "DataType": "Type"})
-
-
-class ExtractTests(unittest.TestCase):
-    def test_extract_pulls_mapped_values(self) -> None:
-        source = SourceTable(
-            name="Customer",
-            headers=["Field", "Type", "Required", "Purpose"],
-            rows=[
-                ["customer_id", "INT", "No", "Unique id"],
-                ["name", "STRING", "Yes", "Full name"],
-            ],
-        )
-        column_set = ColumnSet(
-            table_names=["Customer"],
-            pairs=[
-                ("Field", "Column"),
-                ("Type", "DataType"),
-                ("Required", "Nullable(Y/N)"),
-                ("Purpose", "Description"),
-            ],
-        )
-        extracted = extract_column_set(column_set, [source])
-        self.assertEqual(len(extracted), 1)
-        name, rows = extracted[0]
-        self.assertEqual(name, "Customer")
-        column_index = TARGET_COLUMNS.index("Column")
-        datatype_index = TARGET_COLUMNS.index("DataType")
-        desc_index = TARGET_COLUMNS.index("Description")
-        self.assertEqual(rows[0][column_index], "customer_id")
-        self.assertEqual(rows[0][datatype_index], "INT")
-        self.assertEqual(rows[0][desc_index], "Unique id")
-        # Unmapped target columns stay empty.
-        pk_index = TARGET_COLUMNS.index("Primary Key (Y/N)")
-        self.assertEqual(rows[0][pk_index], "")
-
-    def test_render_extract_markdown(self) -> None:
-        source = SourceTable(
-            name="Customer",
-            headers=["Field", "Type"],
-            rows=[["customer_id", "INT"]],
-        )
-        column_set = ColumnSet(
-            table_names=["Customer"],
-            pairs=[("Field", "Column"), ("Type", "DataType")],
-        )
-        md = render_extract_markdown(column_set, [source], index=1)
-        self.assertIn("# Column Set 1", md)
-        self.assertIn("## Customer", md)
-        self.assertIn("| " + " | ".join(TARGET_COLUMNS) + " |", md)
-        self.assertIn("customer_id", md)
-
-
 class CliTests(unittest.TestCase):
-    def test_end_to_end_cli(self) -> None:
+    def test_propose_mapping_cli(self) -> None:
         with TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             docx = tmp_path / "tables.docx"
@@ -224,41 +152,10 @@ class CliTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertTrue(mapping_out.is_file())
 
-            schema_dir = tmp_path / "schema"
-            rc = main(
-                [
-                    "create-schema",
-                    str(mapping_out),
-                    "--docx",
-                    str(docx),
-                    "--out-dir",
-                    str(schema_dir),
-                ]
-            )
-            self.assertEqual(rc, 0)
-            extract = schema_dir / "column-set-1.md"
-            self.assertTrue(extract.is_file())
-            self.assertIn("customer_id", extract.read_text(encoding="utf-8"))
-
-    def test_create_schema_resolves_source_from_mapping(self) -> None:
-        with TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            docx = tmp_path / "tables.docx"
-            body = _p("Table: Customer", style="Heading1") + _table(
-                [["Field", "Type"], ["customer_id", "INT"]]
-            )
-            _make_docx(docx, body)
-
-            mapping_out = tmp_path / "mapping.md"
-            self.assertEqual(
-                main(["propose-mapping", str(docx), "--out", str(mapping_out)]), 0
-            )
-
-            schema_dir = tmp_path / "schema"
-            # No --docx: the source is read from the mapping's "Source" line.
-            rc = main(["create-schema", str(mapping_out), "--out-dir", str(schema_dir)])
-            self.assertEqual(rc, 0)
-            self.assertTrue((schema_dir / "column-set-1.md").is_file())
+            text = mapping_out.read_text(encoding="utf-8")
+            self.assertIn("## Column Set 1", text)
+            self.assertIn("|Field|Column|", text)
+            self.assertIn("|Purpose|Description|", text)
 
 
 class SecurityTests(unittest.TestCase):

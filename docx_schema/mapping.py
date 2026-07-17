@@ -1,10 +1,9 @@
 """Read source tables from a ``.docx`` and render a proposed mapping markdown.
 
 The proposed mapping is a reviewer-editable crosswalk. For each *column set*
-(a group of source tables that share the same extracted columns) it lists every
-extracted column from the document alongside the target data-dictionary column
-it should map to. A reviewer confirms or edits the ``Target Column`` values
-before running ``create-schema``.
+(a group of source tables that share the same extracted columns) it proposes a
+best-guess pairing of each extracted column to a target data-dictionary column,
+using header synonyms. A human confirms or corrects the pairings.
 """
 
 from __future__ import annotations
@@ -89,11 +88,12 @@ def group_column_sets(tables: list[SourceTable]) -> list[ColumnSet]:
 
 
 def _build_pairs(headers: list[str]) -> list[tuple[str, str]]:
-    """Build the ordered crosswalk rows for a column set.
+    """Build the proposed crosswalk rows for a column set.
 
-    Extracted columns that do not auto-match a target are listed first with an
-    empty target. Every target column is then listed in canonical order, paired
-    with its matched extracted column (or empty when nothing matched).
+    Each extracted column is matched to a target column by header synonym.
+    Extracted columns with no confident match are listed first with an empty
+    target. Every target column is then listed in canonical order, paired with
+    its matched extracted column (or empty when nothing matched).
     """
 
     matched: dict[str, str] = {}
@@ -143,8 +143,8 @@ def render_mapping_markdown(column_sets: list[ColumnSet], source: str) -> str:
         f"- Source: `{source}`",
         f"- Generated: {today}",
         "",
-        "> Review and edit the `Target Column` values before running `create-schema`.",
-        "> Leave a cell empty to skip that extracted or target column.",
+        "> A best-guess mapping is proposed below. Review and correct the pairings.",
+        "> An empty cell means no confident match was found for that column.",
         "",
     ]
 

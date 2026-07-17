@@ -37,17 +37,9 @@ class ColumnSet:
     """A group of source tables that share the same extracted-column signature.
 
     ``pairs`` is the ordered crosswalk shown in the proposed mapping: each entry
-    is ``(extracted_column, target_column)`` where either side may be empty.
+    is ``(extracted_column, target_column)`` where either side may be empty. A
+    human pairs them up by editing the two-column table.
     """
 
     table_names: list[str] = field(default_factory=list)
     pairs: list[tuple[str, str]] = field(default_factory=list)
-
-    def target_to_extracted(self) -> dict[str, str]:
-        """Return a lookup of target column -> extracted column for filled pairs."""
-
-        mapping: dict[str, str] = {}
-        for extracted, target in self.pairs:
-            if extracted and target and target not in mapping:
-                mapping[target] = extracted
-        return mapping
