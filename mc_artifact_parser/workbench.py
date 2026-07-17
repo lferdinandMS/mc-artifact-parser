@@ -6,6 +6,7 @@ from mc_artifact_parser.models import ArtifactParseResult, ColumnSchema, EntityS
 from mc_artifact_parser.outputs.data_dictionary import DataDictionaryOutput
 from mc_artifact_parser.outputs.mermaid_erd import MermaidErdOutput
 from mc_artifact_parser.outputs.open_questions import OpenQuestionsOutput
+from mc_artifact_parser.outputs.table_schema_markdown import TableSchemaMarkdownOutput
 from mc_artifact_parser.parser import ArtifactParser
 
 
@@ -13,6 +14,14 @@ from mc_artifact_parser.parser import ArtifactParser
 class CompletenessIssue:
     entity_name: str | None
     message: str
+
+
+@dataclass
+class ColumnAssessment:
+    entity_name: str
+    column_name: str
+    status: str
+    notes: list[str] = field(default_factory=list)
 
 
 class SchemaCompletenessChecker:
@@ -92,6 +101,49 @@ class SchemaWorkbench:
             self.add(path)
         return self.result
 
+    def assess_columns(self) -> list[ColumnAssessment]:
+        assessments: list[ColumnAssessment] = []
+
+        for entity in self.result.entities:
+            for column in entity.columns:
+                notes: list[str] = []
+                status = "approved"
+
+                if column.data_type is None:
+                    notes.append("Missing data type")
+                    status = "needs_review"
+
+                if " " in column.name:
+                    notes.append("Column name contains spaces")
+                    status = "needs_review"
+
+                if column.name.lower() in {"source", "date", "status", "notes"}:
+                    notes.append("Common label that should be verified manually")
+                    if status != "needs_review":
+                        status = "review_optional"
+
+                assessments.append(
+                    ColumnAssessment(
+                        entity_name=entity.name,
+                        column_name=column.name,
+                        status=status,
+                        notes=notes,
+                    )
+                )
+
+        return assessments
+
+    def replace_entity_columns(self, entity_name: str, columns: list[ColumnSchema]) -> None:
+        entity = self._find_entity(entity_name)
+        if entity is None:
+            raise ValueError(f"Entity '{entity_name}' was not found in the accumulated schema.")
+
+        entity.columns = columns
+
+    def review_entity_columns(self, entity_name: str, columns: list[ColumnSchema]) -> ArtifactParseResult:
+        self.replace_entity_columns(entity_name, columns)
+        return self.result
+
     @property
     def result(self) -> ArtifactParseResult:
         self._result.source_path = "; ".join(self._sources)
@@ -120,6 +172,21 @@ class SchemaWorkbench:
 
     def build_erd(self) -> str:
         return MermaidErdOutput().render(self.result)
+
+    def build_table_schema_markdowns(self) -> dict[str, str]:
+        documents: dict[str, str] = {}
+        renderer = TableSchemaMarkdownOutput()
+
+        for entity in self.result.entities:
+            filename = self._entity_filename(entity.name)
+            entity_result = ArtifactParseResult(
+                source_path=self.result.source_path,
+                artifact_type="aggregate",
+                entities=[entity],
+            )
+            documents[filename] = renderer.render(entity_result)
+
+        return documents
 
     def build_open_questions(self) -> str:
         return OpenQuestionsOutput().render(self._result_with_generated_questions())
@@ -181,3 +248,9 @@ class SchemaWorkbench:
     def _append_unique(self, items: list[str], value: str) -> None:
         if value not in items:
             items.append(value)
+
+    def _entity_filename(self, entity_name: str) -> str:
+        safe_name = entity_name.strip().lower()
+        safe_name = "".join(char if char.isalnum() or char in {" ", "_", "-"} else " " for char in safe_name)
+        safe_name = "_".join(part for part in safe_name.split() if part)
+        return f"{safe_name or 'entity'}.md"

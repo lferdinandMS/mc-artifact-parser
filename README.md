@@ -41,8 +41,9 @@ your own OCR pipeline, pass a custom text extractor to `ImageAdapter`.
 
 ### Accumulate multiple inputs before rendering outputs
 
-Use `SchemaWorkbench` when you want to add several documents or images over time,
-check completeness, and then render a data dictionary or ERD once you are ready:
+Use `SchemaWorkbench` when you want to add several documents or images over time.
+The first phase is to review the per-table markdown bundle, and only after the
+collection is complete do you render a data dictionary or ERD:
 
 ```python
 from mc_artifact_parser import SchemaWorkbench
@@ -51,11 +52,16 @@ workbench = SchemaWorkbench()
 workbench.add("/path/to/customer.png")
 workbench.add("/path/to/order.png")
 
+table_docs = workbench.build_table_schema_markdowns()
 print(workbench.completeness_issues)
 print(workbench.generated_open_questions)
+print(table_docs)
 print(workbench.build_data_dictionary())
 print(workbench.build_erd())
 ```
+
+`build_table_schema_markdowns()` returns a dictionary of markdown file names to
+per-table schema markdown content. Each file is named from the entity name.
 
 ---
 
