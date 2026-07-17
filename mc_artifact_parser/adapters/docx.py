@@ -6,7 +6,8 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from mc_artifact_parser.adapters.base import ArtifactAdapter
-from mc_artifact_parser.models import ArtifactParseResult, ColumnSchema, EntitySchema
+from mc_artifact_parser.adapters.column_parsing import parse_column_line
+from mc_artifact_parser.models import ArtifactParseResult, EntitySchema
 
 
 class DocxAdapter(ArtifactAdapter):
@@ -116,32 +117,7 @@ class DocxAdapter(ArtifactAdapter):
                 self._append_unique(entity.related_entities, clean)
 
     def _parse_column(self, line: str) -> ColumnSchema | None:
-        # Regex capture groups: 1=column name, 2=type in parentheses, 3=type after colon, 4=trailing metadata.
-        match = self._COLUMN_PATTERN.match(line)
-        if not match:
-            return None
-
-        name, paren_type, colon_type, trailing = match.groups()
-        lowered = line.lower()
-        data_type = paren_type or colon_type
-        nullable: bool | None = None
-        if re.search(r"\b(not\s+null|required|not\s+nullable|non[-\s]?nullable)\b", lowered):
-            nullable = False
-        elif re.search(r"\b(nullable|optional|null\s+allowed)\b", lowered):
-            nullable = True
-
-        primary_key = bool(re.search(r"\b(primary\s+key|pk)\b", lowered))
-
-        looks_like_column_definition = bool(data_type or nullable is not None or primary_key or trailing.strip())
-        if not looks_like_column_definition:
-            return None
-
-        return ColumnSchema(
-            name=name,
-            data_type=data_type.strip() if data_type else None,
-            nullable=nullable,
-            primary_key=primary_key,
-        )
+        return parse_column_line(line)
 
     def _extract_reference_entities(self, line: str) -> list[str]:
         refs = []

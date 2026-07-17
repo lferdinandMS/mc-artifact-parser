@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from mc_artifact_parser.models import ArtifactParseResult, EntitySchema
 from mc_artifact_parser.outputs.base import OutputRenderer
+from mc_artifact_parser.outputs.formatting import normalize_column_name, normalize_table_name
 
 
 class MermaidErdOutput(OutputRenderer):
@@ -25,7 +26,7 @@ class MermaidErdOutput(OutputRenderer):
         return "\n".join(lines)
 
     def _render_entity_block(self, entity: EntitySchema) -> list[str]:
-        lines = [f"    {entity.name} {{"]
+        lines = [f"    {normalize_table_name(entity.name)} {{"]
         for col in entity.columns:
             col_type = col.data_type or "string"
             annotations: list[str] = []
@@ -34,6 +35,6 @@ class MermaidErdOutput(OutputRenderer):
             elif col.name.lower().endswith("_id"):
                 annotations.append("FK")
             annotation_str = f" {', '.join(annotations)}" if annotations else ""
-            lines.append(f"        {col_type} {col.name}{annotation_str}")
+            lines.append(f"        {col_type} {normalize_column_name(col.name)}{annotation_str}")
         lines.append("    }")
         return lines

@@ -70,7 +70,10 @@ Related Entities: Order
             workbench.add(str(path))
 
         self.assertTrue(any("primary key" in issue.message.lower() for issue in workbench.completeness_issues))
-        self.assertIn("What is the primary key for Invoice?", workbench.generated_open_questions)
+        self.assertTrue(any(q.startswith("Provide Type values for:") for q in workbench.generated_open_questions))
+        self.assertTrue(any(q.startswith("Specify Nullable values (Yes/No) for:") for q in workbench.generated_open_questions))
+        self.assertTrue(any(q.startswith("Identify the primary key column(s) for Invoice") for q in workbench.generated_open_questions))
+        self.assertTrue(any(q.startswith("Provide Details and Description values for:") for q in workbench.generated_open_questions))
         self.assertIn("Should Invoice reference Customer?", workbench.generated_open_questions)
 
     def test_human_review_can_replace_misparsed_columns(self) -> None:
@@ -113,9 +116,42 @@ Related Entities: Order
         self.assertEqual([column.data_type for column in reviewed.columns], ["int", "decimal", "date", "text"])
         table_docs = workbench.build_table_schema_markdowns()
         self.assertIn("invoice_ar_before.md", table_docs)
-        self.assertIn("# Invoice / AR (Before)", table_docs["invoice_ar_before.md"])
-        self.assertIn("## Invoice / AR (Before)", workbench.build_data_dictionary())
+        self.assertIn("# Invoice_AR_Before", table_docs["invoice_ar_before.md"])
+        self.assertIn("Identify the primary key column(s) for Invoice / AR (Before)", table_docs["invoice_ar_before.md"])
+        self.assertIn("## Invoice_AR_Before", workbench.build_data_dictionary())
         self.assertIn("erDiagram", workbench.build_erd())
+
+        mapping_docs = workbench.build_mapping_markdowns()
+        self.assertIn("invoice_ar_before.md", mapping_docs)
+        self.assertIn("## Mapping", mapping_docs["invoice_ar_before.md"])
+        self.assertIn("Parsed Item|Target Item", mapping_docs["invoice_ar_before.md"])
+
+    def test_builds_source_review_and_session_mapping_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "schema.png"
+            path.write_bytes(b"fake image bytes")
+
+            parser = ArtifactParser(
+                adapters=[
+                    ImageAdapter(
+                        text_extractor=lambda _: """
+## Example
+- id (int) pk not null
+""".strip()
+                    )
+                ]
+            )
+
+            workbench = SchemaWorkbench(parser=parser)
+            workbench.add(str(path))
+
+        source_review = workbench.build_source_review_report()
+        mapping_proposal = workbench.build_session_mapping_proposal()
+
+        self.assertIn("# Source Review", source_review)
+        self.assertIn("## Example", source_review)
+        self.assertIn("# Session Mapping Proposal", mapping_proposal)
+        self.assertIn("Parsed Item|Target Item", mapping_proposal)
 
 
 if __name__ == "__main__":

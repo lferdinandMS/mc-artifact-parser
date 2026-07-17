@@ -36,6 +36,25 @@ Related Entities: Order
         adapter_names = [type(adapter).__name__ for adapter in ArtifactParser()._adapters]
         self.assertIn("ImageAdapter", adapter_names)
 
+    def test_fallback_infers_entity_from_ocr_without_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            image_path = Path(td) / "confidence-framework.png"
+            image_path.write_bytes(b"fake image bytes")
+
+            adapter = ImageAdapter(
+                text_extractor=lambda _: """
+Balance Visibility Can we see current cash?
+Inflow Visibility Can we see money coming in?
+Outflow Visibility Can we see money going out?
+""".strip()
+            )
+            result = adapter.parse(str(image_path))
+
+        self.assertEqual(result.artifact_type, "image")
+        self.assertEqual([entity.name for entity in result.entities], ["Confidence Framework"])
+        self.assertGreaterEqual(len(result.entities[0].columns), 3)
+        self.assertTrue(any("inferred" in question.lower() for question in result.open_questions))
+
 
 if __name__ == "__main__":
     unittest.main()

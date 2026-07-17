@@ -10,6 +10,8 @@ class ColumnSchema:
     data_type: Optional[str] = None
     nullable: Optional[bool] = None
     primary_key: bool = False
+    foreign_key: Optional[str] = None
+    description: Optional[str] = None
 
 
 @dataclass

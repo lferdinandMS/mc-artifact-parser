@@ -53,15 +53,81 @@ workbench.add("/path/to/customer.png")
 workbench.add("/path/to/order.png")
 
 table_docs = workbench.build_table_schema_markdowns()
+mapping_docs = workbench.build_mapping_markdowns()
 print(workbench.completeness_issues)
 print(workbench.generated_open_questions)
 print(table_docs)
+print(mapping_docs)
 print(workbench.build_data_dictionary())
 print(workbench.build_erd())
 ```
 
 `build_table_schema_markdowns()` returns a dictionary of markdown file names to
 per-table schema markdown content. Each file is named from the entity name.
+
+`build_mapping_markdowns()` returns a dictionary of markdown file names to
+per-table human review mapping templates that preserve the parsed source values
+and leave the intended output structure for review.
+
+### Agent workflow orchestration
+
+Use `SchemaWorkflowAgent` to run a staged human-in-the-loop workflow:
+
+```python
+from mc_artifact_parser import ArtifactParser, SchemaWorkflowAgent, SchemaWorkbench
+
+workbench = SchemaWorkbench(parser=ArtifactParser())
+agent = SchemaWorkflowAgent(workbench=workbench, output_root="review-bundle")
+
+agent.review_sources(["/path/to/schema.png"])
+agent.propose_mapping()
+agent.approve_mapping()
+agent.draft_outputs()
+agent.finalize_outputs()
+```
+
+Artifacts are written to these folders under `review-bundle`:
+- `session/` for source review, session mapping proposal, and persisted stage state
+- `mappings/` for per-table mapping files
+- `drafts/` for draft table schemas and draft data dictionary
+- `final/` for final ERD and final data dictionary
+
+Command-line usage:
+
+```bash
+python -m mc_artifact_parser --sources /path/to/schema.md
+```
+
+Slash workflow commands:
+
+```bash
+python -m mc_artifact_parser /mapping --sources /path/to/schema.png --output-root review-bundle
+```
+
+`/mapping` runs review, proposes mapping, approves mapping, and writes per-entity mapping files to `review-bundle/mappings/` in the mapping template format.
+
+After reviewer edits/finalizes mapping files, run extraction:
+
+```bash
+python -m mc_artifact_parser /extraction --output-root review-bundle
+```
+
+`/extraction` loads the finalized mapping files and applies the mapping contract when rendering the final data dictionary.
+
+To remove generated workflow output folders quickly:
+
+```bash
+python -m mc_artifact_parser /clean
+```
+
+`/clean` removes generated output directories such as `review-bundle`, `slash-workflow-demo`, and `walkthrough*` folders from the current working directory.
+
+Run specific stages explicitly:
+
+```bash
+python -m mc_artifact_parser --sources /path/to/schema.md --review-sources --propose-mapping
+python -m mc_artifact_parser --approve-mapping --draft-outputs --finalize
+```
 
 ---
 

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from dataclasses import replace
 
 from mc_artifact_parser.models import ArtifactParseResult, ColumnSchema, EntitySchema
 from mc_artifact_parser.outputs.data_dictionary import DataDictionaryOutput
+from mc_artifact_parser.outputs.mappings import MappingMarkdownOutput
 from mc_artifact_parser.outputs.mermaid_erd import MermaidErdOutput
 from mc_artifact_parser.outputs.open_questions import OpenQuestionsOutput
+from mc_artifact_parser.outputs.session_mapping import SessionMappingOutput
+from mc_artifact_parser.outputs.source_review import SourceReviewOutput
 from mc_artifact_parser.outputs.table_schema_markdown import TableSchemaMarkdownOutput
 from mc_artifact_parser.parser import ArtifactParser
 
@@ -59,19 +63,54 @@ class SchemaCompletenessChecker:
                 continue
 
             if issue.message == "No columns were extracted for this table.":
-                questions.append(f"What columns belong to {issue.entity_name}?")
-            elif issue.message == "No primary key was identified.":
-                questions.append(f"What is the primary key for {issue.entity_name}?")
-            elif issue.message.startswith("Column '"):
-                column_name = issue.message.split("'", 2)[1]
-                questions.append(f"What is the data type for {issue.entity_name}.{column_name}?")
+                questions.append("Provide the types for the columns")
             elif issue.message.startswith("Related table '"):
                 related_name = issue.message.split("'", 2)[1]
                 questions.append(f"Should {issue.entity_name} reference {related_name}?")
-            else:
-                questions.append(f"What is missing for {issue.entity_name}? {issue.message}")
+
+        for entity in result.entities:
+            questions.extend(self._missing_target_field_questions(entity))
 
         return self._dedupe(questions)
+
+    def _missing_target_field_questions(self, entity: EntitySchema) -> list[str]:
+        questions: list[str] = []
+
+        if not entity.columns:
+            return questions
+
+        def _join_column_names(names: list[str]) -> str:
+            return ", ".join(names)
+
+        missing_type = [column.name for column in entity.columns if column.data_type is None]
+        missing_nullable = [column.name for column in entity.columns if column.nullable is None]
+        missing_foreign_key = [
+            column.name
+            for column in entity.columns
+            if (column.name.lower().endswith("_id") or column.name.lower().endswith(" id")) and not column.foreign_key
+        ]
+        missing_details_description = [
+            column.name
+            for column in entity.columns
+            if not (column.description and column.description.strip())
+        ]
+
+        if missing_type:
+            questions.append(f"Provide Type values for: {_join_column_names(missing_type)}")
+
+        if missing_nullable:
+            questions.append(f"Specify Nullable values (Yes/No) for: {_join_column_names(missing_nullable)}")
+
+        if not any(column.primary_key for column in entity.columns):
+            questions.append(f"Identify the primary key column(s) for {entity.name}")
+
+        if missing_foreign_key:
+            questions.append(f"Confirm Foreign Key values for: {_join_column_names(missing_foreign_key)}")
+
+        if missing_details_description:
+            questions.append(f"Provide Details and Description values for: {_join_column_names(missing_details_description)}")
+
+        return questions
 
     def _dedupe(self, items: list[str]) -> list[str]:
         deduped: list[str] = []
@@ -179,10 +218,27 @@ class SchemaWorkbench:
 
         for entity in self.result.entities:
             filename = self._entity_filename(entity.name)
+            reviewed_entity = replace(entity, open_questions=self._entity_open_questions(entity))
             entity_result = ArtifactParseResult(
                 source_path=self.result.source_path,
                 artifact_type="aggregate",
-                entities=[entity],
+                entities=[reviewed_entity],
+            )
+            documents[filename] = renderer.render(entity_result)
+
+        return documents
+
+    def build_mapping_markdowns(self) -> dict[str, str]:
+        documents: dict[str, str] = {}
+        renderer = MappingMarkdownOutput()
+
+        for entity in self.result.entities:
+            filename = self._entity_filename(entity.name)
+            reviewed_entity = replace(entity, open_questions=self._entity_open_questions(entity))
+            entity_result = ArtifactParseResult(
+                source_path=self.result.source_path,
+                artifact_type="aggregate",
+                entities=[reviewed_entity],
             )
             documents[filename] = renderer.render(entity_result)
 
@@ -191,6 +247,12 @@ class SchemaWorkbench:
     def build_open_questions(self) -> str:
         return OpenQuestionsOutput().render(self._result_with_generated_questions())
 
+    def build_source_review_report(self) -> str:
+        return SourceReviewOutput().render(self._result_with_generated_questions())
+
+    def build_session_mapping_proposal(self) -> str:
+        return SessionMappingOutput().render(self._result_with_generated_questions())
+
     def _result_with_generated_questions(self) -> ArtifactParseResult:
         return ArtifactParseResult(
             source_path=self.result.source_path,
@@ -198,6 +260,28 @@ class SchemaWorkbench:
             entities=self.result.entities,
             open_questions=self.generated_open_questions,
         )
+
+    def _entity_open_questions(self, entity: EntitySchema) -> list[str]:
+        questions: list[str] = list(entity.open_questions)
+
+        questions.extend(self.completeness_checker._missing_target_field_questions(entity))
+
+        for issue in self.completeness_issues:
+            if issue.entity_name != entity.name:
+                continue
+
+            if issue.message == "No columns were extracted for this table.":
+                questions.append("Provide the types for the columns")
+            elif issue.message.startswith("Related table '"):
+                related_name = issue.message.split("'", 2)[1]
+                questions.append(f"Should {entity.name} reference {related_name}?")
+
+        deduped: list[str] = []
+        for question in questions:
+            if question not in deduped:
+                deduped.append(question)
+
+        return deduped
 
     def _merge_result(self, parsed: ArtifactParseResult) -> None:
         for entity in parsed.entities:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from mc_artifact_parser.models import ArtifactParseResult, EntitySchema
+from mc_artifact_parser.outputs.formatting import normalize_column_name, normalize_table_name
 from mc_artifact_parser.outputs.base import OutputRenderer
 
 
@@ -18,7 +19,7 @@ class TableSchemaMarkdownOutput(OutputRenderer):
         return "\n".join(lines).rstrip()
 
     def _render_entity(self, entity: EntitySchema, source_path: str) -> list[str]:
-        lines: list[str] = [f"# {entity.name}"]
+        lines: list[str] = [f"# {normalize_table_name(entity.name)}"]
 
         if source_path:
             lines.append("")
@@ -30,13 +31,13 @@ class TableSchemaMarkdownOutput(OutputRenderer):
         if not entity.columns:
             lines.append("*No columns defined.*")
         else:
-            lines.append("| Column | Type | Nullable | Primary Key |")
-            lines.append("|--------|------|----------|-------------|")
+            lines.append("| Column | Type | Nullable | Primary Key | Foreign Key | Details | Description |")
+            lines.append("|--------|------|----------|-------------|-------------|---------|-------------|")
             for column in entity.columns:
                 nullable_str = {True: "Yes", False: "No", None: ""}.get(column.nullable, "")
                 pk_str = "Yes" if column.primary_key else "No"
                 lines.append(
-                    f"| {column.name} | {column.data_type or ''} | {nullable_str} | {pk_str} |"
+                    f"| {normalize_column_name(column.name)} | {column.data_type or ''} | {nullable_str} | {pk_str} | {column.foreign_key or ''} | {column.description or ''} |  |"
                 )
 
         if entity.related_entities:

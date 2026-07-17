@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 from mc_artifact_parser.adapters.base import ArtifactAdapter
+from mc_artifact_parser.adapters.column_parsing import parse_column_line
 from mc_artifact_parser.models import ArtifactParseResult, ColumnSchema, EntitySchema
 
 
@@ -30,6 +31,20 @@ class MarkdownAdapter(ArtifactAdapter):
         re.compile(r"\bforeign\s+key\s+to\s+([A-Za-z_][\w]*)", re.IGNORECASE),
     )
     _MAX_FILE_BYTES = 10 * 1024 * 1024
+    _SECTION_HEADINGS = {
+        "columns",
+        "related entities",
+        "related entity",
+        "open questions",
+        "open question",
+        "mapping",
+    }
+    _NON_ENTITY_TITLES = {
+        "data dictionary",
+        "open questions",
+        "source review",
+        "session mapping proposal",
+    }
 
     def can_parse(self, path: str) -> bool:
         return Path(path).suffix.lower() == ".md"
@@ -38,26 +53,46 @@ class MarkdownAdapter(ArtifactAdapter):
         lines = self._extract_lines(path)
         result = ArtifactParseResult(source_path=path, artifact_type="markdown")
         current_entity: EntitySchema | None = None
+        current_section: str | None = None
+        h1_title: str | None = None
 
         for raw_line in lines:
             stripped = raw_line.strip()
 
-            # H2–H6 headings start a new entity.
-            heading_match = re.match(r"^(#{2,6})\s+(.+)$", stripped)
+            # Headings can define entities, document titles, or section labels.
+            heading_match = re.match(r"^(#{1,6})\s+(.+)$", stripped)
             if heading_match:
+                level = len(heading_match.group(1))
                 heading_text = heading_match.group(2).strip()
+
+                if level == 1:
+                    h1_title = heading_text
+                    current_section = None
+                    continue
+
+                if self._is_section_heading(heading_text):
+                    current_section = heading_text.strip().lower()
+                    if current_entity is None and h1_title and not self._is_non_entity_title(h1_title):
+                        current_entity = EntitySchema(name=h1_title, implied_tables=[h1_title])
+                        result.entities.append(current_entity)
+                    continue
+
                 explicit = self._ENTITY_HEADER.match(heading_text)
                 entity_name = explicit.group(1).strip() if explicit else heading_text
                 current_entity = EntitySchema(name=entity_name, implied_tables=[entity_name])
                 result.entities.append(current_entity)
-                continue
-
-            # H1 headings are treated as document titles — skip.
-            if re.match(r"^#\s+", stripped):
+                current_section = None
                 continue
 
             line = self._normalize_line(stripped)
             if not line:
+                continue
+
+            if current_section in {"open questions", "open question"}:
+                if current_entity:
+                    current_entity.open_questions.append(line)
+                else:
+                    result.open_questions.append(line)
                 continue
 
             # Non-heading "Entity: Name" / "Table: Name" lines also start an entity.
@@ -66,6 +101,7 @@ class MarkdownAdapter(ArtifactAdapter):
                 entity_name = entity_match.group(1).strip()
                 current_entity = EntitySchema(name=entity_name, implied_tables=[entity_name])
                 result.entities.append(current_entity)
+                current_section = None
                 continue
 
             question = self._extract_question(line)
@@ -78,6 +114,14 @@ class MarkdownAdapter(ArtifactAdapter):
 
             if current_entity is None:
                 continue
+
+            if current_section == "columns":
+                row_cells = self._parse_markdown_table_row(line)
+                if row_cells is not None:
+                    column = self._column_from_table_row(row_cells)
+                    if column is not None:
+                        current_entity.columns.append(column)
+                    continue
 
             related_match = self._RELATED_PREFIX.match(line)
             if related_match:
@@ -123,31 +167,7 @@ class MarkdownAdapter(ArtifactAdapter):
                 self._append_unique(entity.related_entities, clean)
 
     def _parse_column(self, line: str) -> ColumnSchema | None:
-        match = self._COLUMN_PATTERN.match(line)
-        if not match:
-            return None
-
-        name, paren_type, colon_type, trailing = match.groups()
-        lowered = line.lower()
-        data_type = paren_type or colon_type
-        nullable: bool | None = None
-        if re.search(r"\b(not\s+null|required|not\s+nullable|non[-\s]?nullable)\b", lowered):
-            nullable = False
-        elif re.search(r"\b(nullable|optional|null\s+allowed)\b", lowered):
-            nullable = True
-
-        primary_key = bool(re.search(r"\b(primary\s+key|pk)\b", lowered))
-
-        looks_like_column_definition = bool(data_type or nullable is not None or primary_key or trailing.strip())
-        if not looks_like_column_definition:
-            return None
-
-        return ColumnSchema(
-            name=name,
-            data_type=data_type.strip() if data_type else None,
-            nullable=nullable,
-            primary_key=primary_key,
-        )
+        return parse_column_line(line)
 
     def _extract_reference_entities(self, line: str) -> list[str]:
         refs = []
@@ -161,3 +181,56 @@ class MarkdownAdapter(ArtifactAdapter):
     def _append_unique(self, items: list[str], value: str) -> None:
         if value not in items:
             items.append(value)
+
+    def _is_section_heading(self, heading_text: str) -> bool:
+        return heading_text.strip().lower() in self._SECTION_HEADINGS
+
+    def _is_non_entity_title(self, title: str) -> bool:
+        return title.strip().lower() in self._NON_ENTITY_TITLES
+
+    def _parse_markdown_table_row(self, line: str) -> list[str] | None:
+        if not (line.startswith("|") and line.endswith("|")):
+            return None
+
+        cells = [part.strip() for part in line.strip("|").split("|")]
+        return cells
+
+    def _column_from_table_row(self, cells: list[str]) -> ColumnSchema | None:
+        if not cells:
+            return None
+
+        first = cells[0].strip().lower()
+        if first == "column":
+            return None
+        if re.fullmatch(r"-+", first):
+            return None
+
+        name = cells[0].strip()
+        if not name:
+            return None
+
+        data_type = cells[1].strip() if len(cells) > 1 else ""
+        nullable_raw = cells[2].strip().lower() if len(cells) > 2 else ""
+        primary_key_raw = cells[3].strip().lower() if len(cells) > 3 else ""
+        foreign_key = cells[4].strip() if len(cells) > 4 else ""
+        details = cells[5].strip() if len(cells) > 5 else ""
+        description = cells[6].strip() if len(cells) > 6 else ""
+
+        nullable: bool | None = None
+        if nullable_raw == "yes":
+            nullable = True
+        elif nullable_raw == "no":
+            nullable = False
+
+        primary_key = primary_key_raw == "yes"
+
+        detail_or_description = details or description or None
+
+        return ColumnSchema(
+            name=name,
+            data_type=data_type or None,
+            nullable=nullable,
+            primary_key=primary_key,
+            foreign_key=foreign_key or None,
+            description=detail_or_description,
+        )

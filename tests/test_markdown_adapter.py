@@ -20,8 +20,9 @@ class TestMarkdownAdapter(unittest.TestCase):
 # Schema Design
 
 ## Customer
-- customer_id (int) not null primary key
-- email (varchar) nullable
+- customer id (int) not null primary key
+- email address (varchar) nullable - Primary contact email
+- support reason (if available)
 - account_manager_id (int) references Employee.id
 Related Entities: Order, Invoice
 Open Question: Should guest customers be supported?
@@ -41,12 +42,15 @@ Any discounts?
         self.assertEqual(customer.name, "Customer")
         self.assertIn("Customer", customer.implied_tables)
 
-        self.assertEqual(customer.columns[0].name, "customer_id")
+        self.assertEqual(customer.columns[0].name, "customer id")
         self.assertEqual(customer.columns[0].data_type, "int")
         self.assertIs(customer.columns[0].nullable, False)
         self.assertTrue(customer.columns[0].primary_key)
 
         self.assertIs(customer.columns[1].nullable, True)
+        self.assertEqual(customer.columns[1].description, "Primary contact email")
+        self.assertIsNone(customer.columns[2].data_type)
+        self.assertEqual(customer.columns[2].description, "if available")
         self.assertIn("Employee", customer.related_entities)
         self.assertIn("Order", customer.related_entities)
         self.assertIn("Invoice", customer.related_entities)
@@ -137,6 +141,37 @@ Is this the final schema?
             md_path.write_bytes(b"x" * (MarkdownAdapter._MAX_FILE_BYTES + 1))
             with self.assertRaisesRegex(ValueError, "maximum supported size"):
                 ArtifactParser().parse(str(md_path))
+
+    def test_parses_table_schema_markdown_with_h1_entity(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            md_path = Path(td) / "entity_table.md"
+            _write_md(
+                md_path,
+                """\
+# Customer_Specific_Invoice_Payment_Probability_Before
+
+## Columns
+
+| Column | Type | Nullable | Primary Key | Foreign Key | Details | Description |
+|--------|------|----------|-------------|-------------|---------|-------------|
+| Date |  |  | No |  |  |  |
+| Customer_ID | int |  | No | Customer |  |  |
+
+## Open Questions
+- Customer History?
+- Provide the types for the columns
+""",
+            )
+
+            result = ArtifactParser().parse(str(md_path))
+
+        self.assertEqual(len(result.entities), 1)
+        entity = result.entities[0]
+        self.assertEqual(entity.name, "Customer_Specific_Invoice_Payment_Probability_Before")
+        self.assertEqual([column.name for column in entity.columns], ["Date", "Customer_ID"])
+        self.assertEqual(entity.columns[1].data_type, "int")
+        self.assertEqual(entity.columns[1].foreign_key, "Customer")
+        self.assertEqual(entity.open_questions, ["Customer History?", "Provide the types for the columns"])
 
 
 if __name__ == "__main__":
