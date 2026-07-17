@@ -52,6 +52,47 @@ Pass criteria:
 2. source-review.md exists and has Entity Count greater than or equal to 1.
 3. final outputs exist in final folder.
 
+## Greenfield Walkthrough (From Clean Slate)
+Use this when starting a brand new artifact set and you want to run the staged slash-command flow.
+
+1. Start from a clean output root.
+
+    ```powershell
+    python -m mc_artifact_parser /clean --output-root .\greenfield-run
+    ```
+
+2. Run mapping stage with your new inputs.
+
+    ```powershell
+    python -m mc_artifact_parser /mapping --sources "C:\path\to\new-image-1.png" "C:\path\to\new-image-2.png" --output-root .\greenfield-run
+    ```
+
+3. Review and refine mapping files before extraction.
+
+Review these files:
+- greenfield-run/session/source-review.md
+- greenfield-run/session/session_mapping.md
+- greenfield-run/mappings/*.md
+
+4. Finalize extraction using approved mapping outputs.
+
+    ```powershell
+    python -m mc_artifact_parser /extraction --output-root .\greenfield-run
+    ```
+
+5. Validate final artifacts.
+
+Inspect these files:
+- greenfield-run/final/data-dictionary.md
+- greenfield-run/final/erd.mmd
+- greenfield-run/session/mapping_contract.json
+
+Pass criteria:
+1. `/mapping` prints mapping output locations.
+2. `/extraction` prints final output locations and mapping contract path.
+3. `final/data-dictionary.md` and `final/erd.mmd` both exist.
+4. Output column headers reflect the finalized mapping where applicable.
+
 ## User Acceptance Assessment Checklist
 Use this checklist after each walkthrough run:
 
