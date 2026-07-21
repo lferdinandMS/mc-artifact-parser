@@ -66,8 +66,12 @@ def render_mapping_markdown(column_sets: list[ColumnSet]) -> str:
             lines.append("")
         lines.append("| Extracted Column | Target Column |")
         lines.append("|---|---|")
+        seen_targets = {target for _, target in column_set.pairs if target}
         for source, target in column_set.pairs:
             lines.append(f"| {source} | {target} |")
+        for target in TARGET_COLUMNS:
+            if target not in seen_targets:
+                lines.append(f"|  | {target} |")
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
@@ -253,22 +257,44 @@ def _default_target_column(header: str) -> str:
         "column": "Column",
         "column name": "Column",
         "name": "Column",
+        "field": "Column",
         "type": "Type",
         "data type": "Type",
         "datatype": "Type",
         "nullable": "Nullable",
         "null": "Nullable",
+        "required": "Nullable",
+        "required field": "Nullable",
+        "optional": "Nullable",
         "primary key": "Primary Key",
         "pk": "Primary Key",
         "foreign key": "Foreign Key",
         "fk": "Foreign Key",
         "details": "Details",
+        "detail": "Details",
+        "notes": "Details",
         "description": "Description",
+        "purpose": "Description",
         "source": "Source",
     }
 
     if key in aliases:
         return aliases[key]
+
+    if key.startswith("field") or key.startswith("column"):
+        return "Column"
+
+    if key.startswith("type") or key.startswith("data type") or key.startswith("datatype"):
+        return "Type"
+
+    if key.startswith("required") or key.startswith("nullable") or key.startswith("optional"):
+        return "Nullable"
+
+    if key.startswith("purpose") or key.startswith("description"):
+        return "Description"
+
+    if key.startswith("detail") or key.startswith("note") or key.startswith("comment"):
+        return "Details"
 
     for target in TARGET_COLUMNS:
         if key == _normalize_header(target):
@@ -287,7 +313,11 @@ def _signature_from_headers(headers: list[str]) -> tuple[str, ...]:
 
 
 def _signature_from_pairs(pairs: list[tuple[str, str]]) -> tuple[str, ...]:
-    return tuple(_normalize_header(source) for source, _target in pairs)
+    return tuple(
+        _normalize_header(source)
+        for source, _target in pairs
+        if source and _normalize_header(source)
+    )
 
 
 def _slugify(value: str) -> str:

@@ -71,6 +71,28 @@ class TestDocxSchema(unittest.TestCase):
         self.assertNotIn("### Customer", mapping)
         self.assertNotIn("| " + " | ".join(TARGET_COLUMNS) + " |", mapping)
 
+    def test_propose_mapping_makes_good_faith_header_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            docx_path = Path(td) / "mapping.docx"
+            _write_docx(
+                docx_path,
+                [
+                    (
+                        "Customer Metadata",
+                        ["Field", "Type", "Required", "Purpose"],
+                        [["record_hash", "string", "No", "Unique hash" ]],
+                    )
+                ],
+            )
+
+            mapping = render_mapping_markdown(propose_mapping(str(docx_path)))
+
+        self.assertIn("| Field | Column |", mapping)
+        self.assertIn("| Type | Type |", mapping)
+        self.assertIn("| Required | Nullable |", mapping)
+        self.assertIn("| Purpose | Description |", mapping)
+        self.assertIn("|  | Primary Key |", mapping)
+
     def test_project_table_places_values_using_crosswalk(self) -> None:
         table = SourceTable(
             name="Customer",
