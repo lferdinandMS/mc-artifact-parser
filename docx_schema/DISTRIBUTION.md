@@ -51,6 +51,26 @@ _None defined._
 
 ## Embedded source
 
+### `__main__.py`
+
+```python
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+if __package__ in {None, ""}:
+    package_root = Path(__file__).resolve().parent.parent
+    if str(package_root) not in sys.path:
+        sys.path.insert(0, str(package_root))
+
+from docx_schema.cli import main
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
 ### `__init__.py`
 
 ```python
@@ -78,6 +98,21 @@ __all__ = [
     "render_schema_markdown",
     "write_schema_files",
 ]
+```
+
+### `docx_reader.py`
+
+```python
+from __future__ import annotations
+
+from pathlib import Path
+
+
+def normalize_docx_path(path: str | Path) -> str:
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return str(candidate)
+    return str((Path.cwd() / candidate).resolve())
 ```
 
 ### `models.py`
