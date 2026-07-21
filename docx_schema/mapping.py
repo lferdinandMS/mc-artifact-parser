@@ -207,7 +207,7 @@ def _extract_docx_tables(path: str) -> list[SourceTable]:
 
         if tag == "p":
             text = "".join(node.text for node in child.findall(".//w:t", ns) if node.text).strip()
-            if text:
+            if text and _looks_like_table_name(child, text, ns):
                 pending_name = text
             continue
 
@@ -326,10 +326,21 @@ def _signature_from_pairs(pairs: list[tuple[str, str]]) -> tuple[str, ...]:
     )
 
 
+def _looks_like_table_name(paragraph: ET.Element, text: str, ns: dict[str, str]) -> bool:
+    style_el = paragraph.find("w:pPr/w:pStyle", ns)
+    style = (style_el.get(f"{{{ns['w']}}}val", "") if style_el is not None else "") or ""
+    if any(marker in style.lower() for marker in ("heading", "title", "caption")):
+        return True
+    # Fall back for unstyled captions: accept only short, heading-like lines so
+    # prose paragraphs are not mistaken for table names.
+    return len(text) <= 64 and len(text.split()) <= 8
+
+
 def _schema_filename(value: str) -> str:
     cleaned = value.strip()
     cleaned = re.sub(r"[<>:\"/\\|?*\x00-\x1f]+", "_", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = cleaned[:80].strip()
     return f"{cleaned or 'table'}_schema.md"
 
 

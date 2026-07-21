@@ -389,6 +389,72 @@ class TestDocxSchema(unittest.TestCase):
 
             self.assertIn("- Tables: table_1", mapping)
 
+    def test_long_prose_paragraph_is_not_used_as_table_name(self) -> None:
+        prose = (
+            "These sources support the normalized data model by confirming that the "
+            "required financial events and signals are available across major providers "
+            "so not every provider will expose every field directly."
+        )
+        with tempfile.TemporaryDirectory() as td:
+            docx_path = Path(td) / "prose.docx"
+            xml = f"""
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>{html_escape(prose)}</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Name</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Data Type</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>customer_id</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>int</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>
+"""
+            with zipfile.ZipFile(docx_path, "w") as archive:
+                archive.writestr("word/document.xml", xml)
+
+            column_sets = propose_mapping(str(docx_path))
+            self.assertEqual(column_sets[0].table_names, ["table_1"])
+
+            with tempfile.TemporaryDirectory() as out_dir:
+                written = write_schema_files(str(docx_path), column_sets, out_dir)
+
+            self.assertEqual(len(written), 1)
+            self.assertLessEqual(len(written[0].name), 96)
+
+    def test_heading_styled_paragraph_is_used_as_table_name(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            docx_path = Path(td) / "heading.docx"
+            xml = """
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Payment Events Table Definition Reference Guide Section One</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Name</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Data Type</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>customer_id</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>int</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>
+"""
+            with zipfile.ZipFile(docx_path, "w") as archive:
+                archive.writestr("word/document.xml", xml)
+
+            column_sets = propose_mapping(str(docx_path))
+            self.assertEqual(
+                column_sets[0].table_names,
+                ["Payment Events Table Definition Reference Guide Section One"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
