@@ -5,10 +5,18 @@ from pathlib import Path
 
 from mc_artifact_parser import ArtifactParser, SchemaWorkflowAgent
 from mc_artifact_parser.adapters.image import ImageAdapter
+from mc_artifact_parser.agent_workflow import _utc_now_iso
 from mc_artifact_parser.workbench import SchemaWorkbench
 
 
 class TestSchemaWorkflowAgent(unittest.TestCase):
+    def test_utc_now_iso_includes_subsecond_precision(self) -> None:
+        first_timestamp = _utc_now_iso()
+        second_timestamp = _utc_now_iso()
+
+        self.assertRegex(first_timestamp, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}(Z|[+-]\d{2}:\d{2})$")
+        self.assertNotEqual(first_timestamp, second_timestamp)
+
     def test_full_workflow_stages(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)

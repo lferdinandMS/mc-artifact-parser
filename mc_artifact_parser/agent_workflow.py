@@ -11,7 +11,7 @@ from mc_artifact_parser.outputs.data_dictionary import DataDictionaryOutput
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 @dataclass

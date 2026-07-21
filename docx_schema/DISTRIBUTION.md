@@ -7,6 +7,8 @@ Portable source bundle for a two-command workflow:
 
 The current implementation treats each distinct header signature as a separate column set, emits a crosswalk for it, and then uses the reviewed mapping plus the source DOCX to generate one schema markdown file per table.
 
+The workflow state also records ISO timestamps with microsecond precision so successive updates remain distinct in the generated session state.
+
 ## Run it
 
 ```bash
