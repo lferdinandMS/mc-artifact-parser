@@ -198,7 +198,7 @@ def _extract_docx_tables(path: str) -> list[SourceTable]:
 
         xml = archive.read(document_xml)
 
-    if b"<!DOCTYPE" in xml or b"<!ENTITY" in xml:
+    if re.search(br"<!\s*(doctype|entity)\b", xml, flags=re.IGNORECASE):
         raise ValueError("DOCX word/document.xml contains disallowed XML declarations.")
 
     ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
