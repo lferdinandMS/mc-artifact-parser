@@ -1,174 +1,310 @@
-from __future__ import annotations
-
+import tempfile
 import unittest
 import zipfile
+from html import escape as html_escape
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from docx_schema.cli import main
 from docx_schema.mapping import (
-    build_source_tables_from_docx,
-    group_column_sets,
+    parse_mapping_markdown,
+    project_table,
+    propose_mapping,
     render_mapping_markdown,
+    write_schema_files,
 )
-from docx_schema.models import TARGET_COLUMNS, SourceTable
-
-_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+from docx_schema.models import SourceTable, TARGET_COLUMNS
 
 
-def _p(text: str, style: str | None = None) -> str:
-    style_xml = f'<w:pPr><w:pStyle w:val="{style}"/></w:pPr>' if style else ""
-    return f"<w:p>{style_xml}<w:r><w:t>{text}</w:t></w:r></w:p>"
+def _docx_xml(tables: list[tuple[str, list[str], list[list[str]]]]) -> str:
+    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
+    def paragraph(text: str) -> str:
+        return f"<w:p><w:r><w:t>{html_escape(text)}</w:t></w:r></w:p>"
 
-def _cell(text: str) -> str:
-    return f"<w:tc><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:tc>"
+    def cell(text: str) -> str:
+        return f"<w:tc><w:p><w:r><w:t>{html_escape(text)}</w:t></w:r></w:p></w:tc>"
 
+    def row(values: list[str]) -> str:
+        return "<w:tr>" + "".join(cell(value) for value in values) + "</w:tr>"
 
-def _row(cells: list[str]) -> str:
-    return "<w:tr>" + "".join(_cell(c) for c in cells) + "</w:tr>"
+    body_parts: list[str] = []
+    for table_name, headers, rows in tables:
+        body_parts.append(paragraph(table_name))
+        body_parts.append("<w:tbl>")
+        body_parts.append(row(headers))
+        for values in rows:
+            body_parts.append(row(values))
+        body_parts.append("</w:tbl>")
 
-
-def _table(rows: list[list[str]]) -> str:
-    return "<w:tbl>" + "".join(_row(r) for r in rows) + "</w:tbl>"
-
-
-def _make_docx(path: Path, body: str) -> None:
-    document = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        f'<w:document xmlns:w="{_W}"><w:body>{body}</w:body></w:document>'
+    return (
+        f'<w:document xmlns:w="{ns}"><w:body>'
+        + "".join(body_parts)
+        + "</w:body></w:document>"
     )
+
+
+def _write_docx(path: Path, tables: list[tuple[str, list[str], list[list[str]]]]) -> None:
     with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr("word/document.xml", document)
+        archive.writestr("word/document.xml", _docx_xml(tables))
 
 
-class BuildSourceTablesTests(unittest.TestCase):
-    def test_headers_and_rows_captured(self) -> None:
-        with TemporaryDirectory() as tmp:
-            docx = Path(tmp) / "tables.docx"
-            body = _p("Table: Customer", style="Heading1") + _table(
+class TestDocxSchema(unittest.TestCase):
+    def test_render_crosswalk_shape_contains_embedded_wide_table(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            docx_path = Path(td) / "mapping.docx"
+            _write_docx(
+                docx_path,
                 [
-                    ["Field", "Type", "Required", "Purpose"],
-                    ["customer_id", "INT", "Yes", "Unique id"],
-                    ["name", "STRING", "No", "Full name"],
-                ]
+                    (
+                        "Customer",
+                        ["Name", "Data Type", "Nullable"],
+                        [["customer_id", "int", "No"], ["email", "string", "Yes"]],
+                    )
+                ],
             )
-            _make_docx(docx, body)
 
-            tables = build_source_tables_from_docx(str(docx))
+            mapping = render_mapping_markdown(propose_mapping(str(docx_path)))
 
-        self.assertEqual(len(tables), 1)
-        table = tables[0]
-        self.assertEqual(table.name, "Customer")
-        self.assertEqual(table.headers, ["Field", "Type", "Required", "Purpose"])
-        self.assertEqual(table.rows[0], ["customer_id", "INT", "Yes", "Unique id"])
+        self.assertIn("## Column Set 1", mapping)
+        self.assertIn("| Extracted Column | Target Column |", mapping)
+        self.assertIn("### Customer", mapping)
+        self.assertIn("| " + " | ".join(TARGET_COLUMNS) + " |", mapping)
 
-    def test_fallback_name_when_no_heading(self) -> None:
-        with TemporaryDirectory() as tmp:
-            docx = Path(tmp) / "tables.docx"
-            body = _table([["Field", "Type"], ["a", "INT"]])
-            _make_docx(docx, body)
-
-            tables = build_source_tables_from_docx(str(docx))
-
-        self.assertEqual(tables[0].name, "Table1")
-
-
-class CrosswalkTests(unittest.TestCase):
-    def test_proposes_target_mapping(self) -> None:
+    def test_project_table_places_values_using_crosswalk(self) -> None:
         table = SourceTable(
             name="Customer",
-            headers=["Field", "Type", "Required", "Purpose"],
-            rows=[["a", "INT", "Yes", "note"]],
+            headers=["Name", "Data Type", "Nullable"],
+            rows=[["customer_id", "int", "No"]],
         )
-        column_sets = group_column_sets([table])
-        self.assertEqual(len(column_sets), 1)
-        pairs = {target: extracted for extracted, target in column_sets[0].pairs}
-        self.assertEqual(pairs["Column"], "Field")
-        self.assertEqual(pairs["DataType"], "Type")
-        self.assertEqual(pairs["Nullable(Y/N)"], "Required")
-        self.assertEqual(pairs["Description"], "Purpose")
-        # Targets with no match stay empty.
-        self.assertEqual(pairs["Primary Key (Y/N)"], "")
+        pairs = [("Name", "Column"), ("Data Type", "Type"), ("Nullable", "Nullable")]
 
-    def test_unmatched_headers_listed_with_empty_target(self) -> None:
-        table = SourceTable(
-            name="Meta",
-            headers=["Domain", "Primary Docs Referenced", "Key Objects/Endpoints"],
-            rows=[],
-        )
-        column_sets = group_column_sets([table])
-        pairs = column_sets[0].pairs
-        # Unmatched extracted columns come first with empty target.
-        self.assertEqual(pairs[0], ("Domain", ""))
-        self.assertEqual(pairs[1], ("Primary Docs Referenced", ""))
-        self.assertEqual(pairs[2], ("Key Objects/Endpoints", ""))
-        # Followed by every target column with an empty extracted side.
-        target_rows = pairs[3:]
-        self.assertEqual([t for _e, t in target_rows], TARGET_COLUMNS)
-        self.assertTrue(all(e == "" for e, _t in target_rows))
+        projected = project_table(table, pairs)
 
-    def test_render_crosswalk_shape(self) -> None:
-        table = SourceTable(
-            name="Customer",
-            headers=["Field", "Type", "Required", "Purpose"],
-            rows=[],
-        )
-        column_sets = group_column_sets([table])
-        md = render_mapping_markdown(column_sets, source="tables.docx")
-        self.assertIn("|Extracted Column|Target Column|", md)
-        self.assertIn("|Field|Column|", md)
-        self.assertIn("|Type|DataType|", md)
-        self.assertIn("|Required|Nullable(Y/N)|", md)
-        self.assertIn("|Purpose|Description|", md)
-        self.assertIn("||Primary Key (Y/N)|", md)
+        self.assertEqual(projected.columns[0][0], "customer_id")
+        self.assertEqual(projected.columns[0][1], "int")
+        self.assertEqual(projected.columns[0][2], "No")
+        self.assertEqual(len(projected.columns[0]), len(TARGET_COLUMNS))
+        self.assertEqual(projected.columns[0][3], "")
 
-    def test_identical_headers_group_together(self) -> None:
-        headers = ["Field", "Type"]
-        tables = [
-            SourceTable(name="A", headers=list(headers), rows=[]),
-            SourceTable(name="B", headers=list(headers), rows=[]),
-        ]
-        column_sets = group_column_sets(tables)
-        self.assertEqual(len(column_sets), 1)
-        self.assertEqual(column_sets[0].table_names, ["A", "B"])
-
-
-class CliTests(unittest.TestCase):
-    def test_propose_mapping_cli(self) -> None:
-        with TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            docx = tmp_path / "tables.docx"
-            body = _p("Table: Customer", style="Heading1") + _table(
+    def test_round_trip_propose_parse_and_write_schema_files(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            docx_path = td_path / "mapping.docx"
+            _write_docx(
+                docx_path,
                 [
-                    ["Field", "Type", "Required", "Purpose"],
-                    ["customer_id", "INT", "No", "Unique id"],
-                ]
+                    (
+                        "Customer",
+                        ["Name", "Data Type", "Nullable"],
+                        [["customer_id", "int", "No"], ["email", "string", "Yes"]],
+                    ),
+                    (
+                        "Order",
+                        ["Name", "Data Type", "Nullable"],
+                        [["order_id", "int", "No"]],
+                    ),
+                ],
             )
-            _make_docx(docx, body)
 
-            mapping_out = tmp_path / "mapping.md"
-            rc = main(["/propose-mapping", f"@{docx}", "--out", str(mapping_out)])
-            self.assertEqual(rc, 0)
-            self.assertTrue(mapping_out.is_file())
+            mapping = render_mapping_markdown(propose_mapping(str(docx_path)))
+            parsed = parse_mapping_markdown(mapping)
+            written = write_schema_files(parsed, td_path / "schema")
 
-            text = mapping_out.read_text(encoding="utf-8")
-            self.assertIn("## Column Set 1", text)
-            self.assertIn("|Field|Column|", text)
-            self.assertIn("|Purpose|Description|", text)
+            self.assertEqual(len(parsed), 1)
+            self.assertEqual(len(written), 2)
+            customer_schema = (td_path / "schema" / "customer_schema.md").read_text(encoding="utf-8")
+            self.assertIn("## Custom Riders", customer_schema)
+            self.assertIn("## Provenance / Audit Columns", customer_schema)
+            self.assertIn("_None defined._", customer_schema)
+            self.assertNotIn("source_system", customer_schema)
+            self.assertNotIn("load_id", customer_schema)
 
+    def test_create_schema_cli_writes_one_file_per_table(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            docx_path = td_path / "mapping.docx"
+            mapping_path = td_path / "mapping.md"
+            out_dir = td_path / "schema"
 
-class SecurityTests(unittest.TestCase):
-    def test_rejects_doctype(self) -> None:
-        with TemporaryDirectory() as tmp:
-            docx = Path(tmp) / "evil.docx"
-            with zipfile.ZipFile(docx, "w") as archive:
-                archive.writestr(
-                    "word/document.xml",
-                    '<?xml version="1.0"?><!DOCTYPE foo><w:document/>',
-                )
-            with self.assertRaises(ValueError):
-                build_source_tables_from_docx(str(docx))
+            _write_docx(
+                docx_path,
+                [
+                    (
+                        "Customer",
+                        ["Name", "Data Type"],
+                        [["customer_id", "int"]],
+                    ),
+                    (
+                        "Order",
+                        ["Name", "Data Type"],
+                        [["order_id", "int"]],
+                    ),
+                ],
+            )
+
+            mapping_path.write_text(render_mapping_markdown(propose_mapping(str(docx_path))), encoding="utf-8")
+            exit_code = main(["create-schema", f"@{mapping_path}", "--out-dir", str(out_dir)])
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue((out_dir / "customer_schema.md").exists())
+            self.assertTrue((out_dir / "order_schema.md").exists())
+
+    def test_propose_mapping_cli_accepts_slash_command_and_at_source(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            docx_path = td_path / "mapping.docx"
+            mapping_path = td_path / "mapping.md"
+
+            _write_docx(
+                docx_path,
+                [
+                    (
+                        "Customer",
+                        ["Name", "Data Type"],
+                        [["customer_id", "int"]],
+                    )
+                ],
+            )
+
+            exit_code = main(["/propose-mapping", f"@{docx_path}", "--out", str(mapping_path)])
+
+            self.assertEqual(exit_code, 0)
+            text = mapping_path.read_text(encoding="utf-8")
+            self.assertIn("### Customer", text)
+            self.assertIn("customer_id", text)
+
+    def test_parse_mapping_errors_when_no_tables_found(self) -> None:
+        with self.assertRaisesRegex(ValueError, "no tables found in mapping markdown"):
+            parse_mapping_markdown("# Proposed Mapping\n")
+
+    def test_create_schema_cli_returns_error_code_when_mapping_has_no_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            mapping_path = Path(td) / "empty.md"
+            mapping_path.write_text("# Proposed Mapping\n", encoding="utf-8")
+
+            exit_code = main(["create-schema", str(mapping_path), "--out-dir", str(Path(td) / "schema")])
+
+            self.assertEqual(exit_code, 1)
+
+    def test_multi_column_set_round_trip_and_cross_set_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            docx_path = td_path / "mapping.docx"
+            _write_docx(
+                docx_path,
+                [
+                    (
+                        "Customer",
+                        ["Name", "Data Type", "Nullable"],
+                        [["customer_id", "int", "No"]],
+                    ),
+                    (
+                        "Customer Metadata",
+                        ["Field", "Rule"],
+                        [["record_hash", "md5(name)"]],
+                    ),
+                ],
+            )
+
+            mapping = render_mapping_markdown(propose_mapping(str(docx_path)))
+            self.assertIn("## Column Set 1", mapping)
+            self.assertIn("## Column Set 2", mapping)
+
+            parsed = parse_mapping_markdown(mapping)
+            self.assertEqual(len(parsed), 2)
+
+            written = write_schema_files(parsed, td_path / "schema")
+            self.assertEqual(len(written), 2)
+            self.assertTrue((td_path / "schema" / "customer_schema.md").exists())
+            self.assertTrue((td_path / "schema" / "customer_metadata_schema.md").exists())
+
+    def test_duplicate_table_name_across_column_sets_errors(self) -> None:
+        mapping = """# Proposed Mapping
+
+## Column Set 1
+
+| Extracted Column | Target Column |
+|---|---|
+| Name | Column |
+
+### Customer
+
+| Column | Type | Nullable | Primary Key | Foreign Key | Details | Description | Source |
+|---|---|---|---|---|---|---|---|
+| customer_id | int | No | Yes |  |  |  |  |
+
+## Column Set 2
+
+| Extracted Column | Target Column |
+|---|---|
+| Field | Column |
+
+### Customer
+
+| Column | Type | Nullable | Primary Key | Foreign Key | Details | Description | Source |
+|---|---|---|---|---|---|---|---|
+| record_hash | string | No | No |  |  |  |  |
+"""
+        parsed = parse_mapping_markdown(mapping)
+
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaisesRegex(ValueError, "duplicate table name across column sets: Customer"):
+                write_schema_files(parsed, Path(td) / "schema")
+
+    def test_rejects_oversized_document_xml(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            docx_path = Path(td) / "oversized.docx"
+            oversized = "<w:document>" + ("a" * (11 * 1024 * 1024)) + "</w:document>"
+            with zipfile.ZipFile(docx_path, "w") as archive:
+                archive.writestr("word/document.xml", oversized)
+
+            with self.assertRaisesRegex(ValueError, "exceeds the maximum supported size"):
+                propose_mapping(str(docx_path))
+
+    def test_rejects_doctype_and_entity_in_document_xml(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            docx_path = Path(td) / "unsafe.docx"
+            unsafe_xml = """<!DOCTYPE foo [ <!ENTITY xxe SYSTEM "file:///etc/passwd"> ]>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr><w:tc><w:p><w:r><w:t>Name</w:t></w:r></w:p></w:tc></w:tr>
+      <w:tr><w:tc><w:p><w:r><w:t>id</w:t></w:r></w:p></w:tc></w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>
+"""
+            with zipfile.ZipFile(docx_path, "w") as archive:
+                archive.writestr("word/document.xml", unsafe_xml)
+
+            with self.assertRaisesRegex(ValueError, "contains disallowed XML declarations"):
+                propose_mapping(str(docx_path))
+
+    def test_falls_back_to_generated_table_name_without_preceding_paragraph(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            docx_path = Path(td) / "no-name.docx"
+            xml = """
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Name</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Data Type</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>customer_id</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>int</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>
+"""
+            with zipfile.ZipFile(docx_path, "w") as archive:
+                archive.writestr("word/document.xml", xml)
+
+            mapping = render_mapping_markdown(propose_mapping(str(docx_path)))
+
+            self.assertIn("### table_1", mapping)
 
 
 if __name__ == "__main__":

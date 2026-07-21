@@ -7,6 +7,7 @@ entity (XXE = XML eXternal Entity) attacks.
 
 from __future__ import annotations
 
+import re
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,14 +60,14 @@ def _read_document_xml(path: str) -> bytes:
 
         xml = archive.read(info)
 
-    if b"<!DOCTYPE" in xml or b"<!ENTITY" in xml:
+    if re.search(br"<!\s*(doctype|entity)\b", xml, flags=re.IGNORECASE):
         raise ValueError("DOCX word/document.xml contains disallowed XML declarations.")
 
     return xml
 
 
 def _read_paragraph(paragraph: ET.Element) -> Paragraph:
-    text = "".join(node.text for node in paragraph.findall(".//w:t", _NS) if node.text).strip()
+    text = "".join(node.text for node in paragraph.findall(".//w:t", _NS) if node.text is not None).strip()
     style_el = paragraph.find("w:pPr/w:pStyle", _NS)
     style = ""
     if style_el is not None:
@@ -82,7 +83,7 @@ def _read_table(table: ET.Element) -> WordTable:
             cell_text = " ".join(
                 (node.text or "").strip()
                 for node in cell.findall(".//w:t", _NS)
-                if node.text
+                if node.text is not None
             ).strip()
             cells.append(cell_text)
         rows.append(cells)

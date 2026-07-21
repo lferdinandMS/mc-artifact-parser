@@ -1,4 +1,6 @@
 __pycache__/
+# Some tools/environments generate this non-standard cache directory.
+pycache/
 
 # Generated workflow outputs
 review-bundle/
