@@ -113,7 +113,6 @@ def parse_mapping_markdown(text: str) -> list[ColumnSet]:
             if index >= len(lines):
                 break
             if not lines[index].strip().startswith("|"):
-                index += 1
                 continue
 
             header = _parse_markdown_row(lines[index])
