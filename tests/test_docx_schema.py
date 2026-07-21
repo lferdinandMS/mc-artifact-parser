@@ -149,6 +149,28 @@ class TestDocxSchema(unittest.TestCase):
             self.assertTrue((out_dir / "customer_schema.md").exists())
             self.assertTrue((out_dir / "order_schema.md").exists())
 
+    def test_propose_mapping_cli_accepts_slash_command_and_at_source(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            docx_path = td_path / "mapping.docx"
+            mapping_path = td_path / "mapping.md"
+
+            _write_docx(
+                docx_path,
+                [
+                    (
+                        "Customer",
+                        ["Name", "Data Type"],
+                        [["customer_id", "int"]],
+                    )
+                ],
+            )
+
+            exit_code = main(["/propose-mapping", f"@{docx_path}", "--out", str(mapping_path)])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("### Customer", mapping_path.read_text(encoding="utf-8"))
+
     def test_parse_mapping_errors_when_no_tables_found(self) -> None:
         with self.assertRaisesRegex(ValueError, "no tables found in mapping markdown"):
             parse_mapping_markdown("# Proposed Mapping\n")

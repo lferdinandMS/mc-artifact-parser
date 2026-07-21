@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
+from docx_schema.docx_reader import normalize_docx_path
 from docx_schema.mapping import parse_mapping_markdown, propose_mapping, render_mapping_markdown, write_schema_files
 
 
@@ -24,6 +26,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    argv = _normalize_argv(argv)
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -39,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _run_propose_mapping(args: argparse.Namespace) -> int:
-    column_sets = propose_mapping(args.source)
+    column_sets = propose_mapping(str(normalize_docx_path(args.source)))
     text = render_mapping_markdown(column_sets)
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -61,6 +65,12 @@ def _run_create_schema(args: argparse.Namespace) -> int:
     for path in written:
         print(path)
     return 0
+
+
+def _normalize_argv(argv: list[str]) -> list[str]:
+    if argv and argv[0].startswith("/"):
+        return [argv[0][1:], *argv[1:]]
+    return argv
 
 
 if __name__ == "__main__":

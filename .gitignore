@@ -9,3 +9,8 @@ walkthrough*/
 
 # Generated mapping artifacts (output folders)
 mappings/
+greenfield-run/
+
+# docx_schema generated outputs
+schema/
+*-mapping.md
