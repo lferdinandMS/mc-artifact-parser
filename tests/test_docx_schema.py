@@ -153,6 +153,15 @@ class TestDocxSchema(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no tables found in mapping markdown"):
             parse_mapping_markdown("# Proposed Mapping\n")
 
+    def test_create_schema_cli_returns_error_code_when_mapping_has_no_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            mapping_path = Path(td) / "empty.md"
+            mapping_path.write_text("# Proposed Mapping\n", encoding="utf-8")
+
+            exit_code = main(["create-schema", str(mapping_path), "--out-dir", str(Path(td) / "schema")])
+
+            self.assertEqual(exit_code, 1)
+
     def test_multi_column_set_round_trip_and_cross_set_writes(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
@@ -217,6 +226,61 @@ class TestDocxSchema(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             with self.assertRaisesRegex(ValueError, "error: duplicate table name across column sets: Customer"):
                 write_schema_files(parsed, Path(td) / "schema")
+
+    def test_rejects_oversized_document_xml(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            docx_path = Path(td) / "oversized.docx"
+            oversized = "<w:document>" + ("a" * (11 * 1024 * 1024)) + "</w:document>"
+            with zipfile.ZipFile(docx_path, "w") as archive:
+                archive.writestr("word/document.xml", oversized)
+
+            with self.assertRaisesRegex(ValueError, "exceeds the maximum supported size"):
+                propose_mapping(str(docx_path))
+
+    def test_rejects_doctype_and_entity_in_document_xml(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            docx_path = Path(td) / "unsafe.docx"
+            unsafe_xml = """<!DOCTYPE foo [ <!ENTITY xxe SYSTEM "file:///etc/passwd"> ]>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr><w:tc><w:p><w:r><w:t>Name</w:t></w:r></w:p></w:tc></w:tr>
+      <w:tr><w:tc><w:p><w:r><w:t>id</w:t></w:r></w:p></w:tc></w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>
+"""
+            with zipfile.ZipFile(docx_path, "w") as archive:
+                archive.writestr("word/document.xml", unsafe_xml)
+
+            with self.assertRaisesRegex(ValueError, "contains disallowed XML declarations"):
+                propose_mapping(str(docx_path))
+
+    def test_falls_back_to_generated_table_name_without_preceding_paragraph(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            docx_path = Path(td) / "no-name.docx"
+            xml = """
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Name</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Data Type</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>customer_id</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>int</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>
+"""
+            with zipfile.ZipFile(docx_path, "w") as archive:
+                archive.writestr("word/document.xml", xml)
+
+            mapping = render_mapping_markdown(propose_mapping(str(docx_path)))
+
+            self.assertIn("### table_1", mapping)
 
 
 if __name__ == "__main__":
