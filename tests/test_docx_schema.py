@@ -67,8 +67,9 @@ class TestDocxSchema(unittest.TestCase):
 
         self.assertIn("## Column Set 1", mapping)
         self.assertIn("| Extracted Column | Target Column |", mapping)
-        self.assertIn("### Customer", mapping)
-        self.assertIn("| " + " | ".join(TARGET_COLUMNS) + " |", mapping)
+        self.assertIn("- Tables: Customer", mapping)
+        self.assertNotIn("### Customer", mapping)
+        self.assertNotIn("| " + " | ".join(TARGET_COLUMNS) + " |", mapping)
 
     def test_project_table_places_values_using_crosswalk(self) -> None:
         table = SourceTable(
@@ -108,7 +109,7 @@ class TestDocxSchema(unittest.TestCase):
 
             mapping = render_mapping_markdown(propose_mapping(str(docx_path)))
             parsed = parse_mapping_markdown(mapping)
-            written = write_schema_files(parsed, td_path / "schema")
+            written = write_schema_files(docx_path, parsed, td_path / "schema")
 
             self.assertEqual(len(parsed), 1)
             self.assertEqual(len(written), 2)
@@ -143,7 +144,7 @@ class TestDocxSchema(unittest.TestCase):
             )
 
             mapping_path.write_text(render_mapping_markdown(propose_mapping(str(docx_path))), encoding="utf-8")
-            exit_code = main(["create-schema", f"@{mapping_path}", "--out-dir", str(out_dir)])
+            exit_code = main(["create-schema", f"@{docx_path}", f"@{mapping_path}", "--out-dir", str(out_dir)])
 
             self.assertEqual(exit_code, 0)
             self.assertTrue((out_dir / "customer_schema.md").exists())
@@ -170,8 +171,9 @@ class TestDocxSchema(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             text = mapping_path.read_text(encoding="utf-8")
-            self.assertIn("### Customer", text)
-            self.assertIn("customer_id", text)
+            self.assertIn("- Tables: Customer", text)
+            self.assertIn("| Name | Column |", text)
+            self.assertNotIn("### Customer", text)
 
     def test_parse_mapping_errors_when_no_tables_found(self) -> None:
         with self.assertRaisesRegex(ValueError, "no tables found in mapping markdown"):
@@ -179,10 +181,17 @@ class TestDocxSchema(unittest.TestCase):
 
     def test_create_schema_cli_returns_error_code_when_mapping_has_no_tables(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            mapping_path = Path(td) / "empty.md"
+            td_path = Path(td)
+            source_docx = td_path / "source.docx"
+            mapping_path = td_path / "empty.md"
+            _write_docx(source_docx, [(
+                "Customer",
+                ["Name", "Data Type"],
+                [["customer_id", "int"]],
+            )])
             mapping_path.write_text("# Proposed Mapping\n", encoding="utf-8")
 
-            exit_code = main(["create-schema", str(mapping_path), "--out-dir", str(Path(td) / "schema")])
+            exit_code = main(["create-schema", str(source_docx), str(mapping_path), "--out-dir", str(td_path / "schema")])
 
             self.assertEqual(exit_code, 1)
 
@@ -213,7 +222,7 @@ class TestDocxSchema(unittest.TestCase):
             parsed = parse_mapping_markdown(mapping)
             self.assertEqual(len(parsed), 2)
 
-            written = write_schema_files(parsed, td_path / "schema")
+            written = write_schema_files(docx_path, parsed, td_path / "schema")
             self.assertEqual(len(written), 2)
             self.assertTrue((td_path / "schema" / "customer_schema.md").exists())
             self.assertTrue((td_path / "schema" / "customer_metadata_schema.md").exists())
@@ -248,8 +257,25 @@ class TestDocxSchema(unittest.TestCase):
         parsed = parse_mapping_markdown(mapping)
 
         with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            source_docx = td_path / "source.docx"
+            _write_docx(
+                source_docx,
+                [
+                    (
+                        "Customer",
+                        ["Name"],
+                        [["customer_id"]],
+                    ),
+                    (
+                        "Customer",
+                        ["Field"],
+                        [["record_hash"]],
+                    ),
+                ],
+            )
             with self.assertRaisesRegex(ValueError, "duplicate table name across column sets: Customer"):
-                write_schema_files(parsed, Path(td) / "schema")
+                write_schema_files(source_docx, parsed, td_path / "schema")
 
     def test_rejects_oversized_document_xml(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -304,7 +330,7 @@ class TestDocxSchema(unittest.TestCase):
 
             mapping = render_mapping_markdown(propose_mapping(str(docx_path)))
 
-            self.assertIn("### table_1", mapping)
+            self.assertIn("- Tables: table_1", mapping)
 
 
 if __name__ == "__main__":

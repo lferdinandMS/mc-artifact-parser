@@ -2,9 +2,9 @@
 
 ## Workflow
 
-1. `propose-mapping` reads `.docx` tables, groups tables into `Column Set N` sections by shared header signatures, and emits a self-contained mapping markdown.
+1. `propose-mapping` reads `.docx` tables, groups tables into distinct `Column Set N` sections by shared header signatures, and emits a reviewed crosswalk for each set.
 2. Reviewer updates `Target Column` cells in each crosswalk as needed.
-3. `create-schema` reads only the reviewed mapping markdown and writes one populated `{table}_schema.md` per table.
+3. `create-schema` reads the reviewed mapping markdown plus the source `.docx`, matches each table to its column set, and writes one populated `{table}_schema.md` per table.
 
 ## Step 2 mapping format (self-contained)
 
@@ -25,7 +25,7 @@
 | email | string | Yes | No |  |  |  |  |
 ```
 
-Each `### <table>` section carries table rows projected into the 8-column target layout, so the mapping file is fully self-contained.
+Each `Column Set N` section is the input contract for `create-schema`: the crosswalk defines how tables with that source header shape are projected into the target schema.
 
 ## Step 3 schema output (riders)
 

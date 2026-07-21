@@ -1,7 +1,6 @@
 from docx_schema.cli import main
 from docx_schema.mapping import (
     parse_mapping_markdown,
-    project_table,
     propose_mapping,
     render_mapping_markdown,
     render_schema_markdown,
@@ -16,7 +15,6 @@ __all__ = [
     "TableSchema",
     "main",
     "parse_mapping_markdown",
-    "project_table",
     "propose_mapping",
     "render_mapping_markdown",
     "render_schema_markdown",

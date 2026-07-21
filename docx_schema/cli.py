@@ -17,7 +17,8 @@ def build_parser() -> argparse.ArgumentParser:
     propose.add_argument("--out", default="./mapping.md", help="Output mapping markdown path")
     propose.set_defaults(handler=_run_propose_mapping)
 
-    create = subparsers.add_parser("create-schema", help="Create per-table schema files from mapping markdown.")
+    create = subparsers.add_parser("create-schema", help="Create per-table schema files from source DOCX plus reviewed mapping markdown.")
+    create.add_argument("source", help="Path to source .docx (leading @ allowed)")
     create.add_argument("mapping", help="Path to mapping markdown (leading @ allowed)")
     create.add_argument("--out-dir", default="./schema", help="Output directory for schema markdown files")
     create.set_defaults(handler=_run_create_schema)
@@ -49,17 +50,18 @@ def _run_propose_mapping(args: argparse.Namespace) -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(text, encoding="utf-8")
 
-    table_count = sum(len(column_set.tables) for column_set in column_sets)
+    table_count = sum(len(column_set.table_names) for column_set in column_sets)
     print(f"Wrote mapping for {table_count} table(s) across {len(column_sets)} column set(s)")
     print(out_path)
     return 0
 
 
 def _run_create_schema(args: argparse.Namespace) -> int:
+    source_path = normalize_docx_path(args.source)
     mapping_path = args.mapping[1:] if args.mapping.startswith("@") else args.mapping
     text = Path(mapping_path).read_text(encoding="utf-8")
     column_sets = parse_mapping_markdown(text)
-    written = write_schema_files(column_sets, args.out_dir)
+    written = write_schema_files(source_path, column_sets, args.out_dir)
 
     print(f"Wrote {len(written)} schema file(s) from {len(column_sets)} column set(s)")
     for path in written:

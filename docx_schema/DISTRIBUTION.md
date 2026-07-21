@@ -3,35 +3,31 @@
 Portable source bundle for a two-command workflow:
 
 1. `python -m docx_schema propose-mapping <docx> --out <mapping.md>`
-2. `python -m docx_schema create-schema <mapping.md> --out-dir <dir>`
+2. `python -m docx_schema create-schema <docx> <mapping.md> --out-dir <dir>`
 
 ## Run it
 
 ```bash
 python -m docx_schema propose-mapping ./sample.docx --out ./mapping.md
-python -m docx_schema create-schema @./mapping.md --out-dir ./schema
+python -m docx_schema create-schema ./sample.docx @./mapping.md --out-dir ./schema
 ```
 
 ## Output format
 
-`propose-mapping` emits one section per column set with a crosswalk and embedded per-table wide table:
+`propose-mapping` emits one section per distinct column set with a crosswalk and table membership list:
 
 ```markdown
 ## Column Set 1
+
+ - Tables: Customer
 
 | Extracted Column | Target Column |
 |---|---|
 | Name | Column |
 | Data Type | Type |
-
-### Customer
-
-| Column | Type | Nullable | Primary Key | Foreign Key | Details | Description | Source |
-|---|---|---|---|---|---|---|---|
-| customer_id | int | No | Yes |  |  |  |  |
 ```
 
-`create-schema` writes one `{table}_schema.md` per table, each ending with visible rider stubs:
+`create-schema` reads the source `.docx` plus the reviewed mapping and writes one `{table}_schema.md` per table, each ending with visible rider stubs:
 
 ```markdown
 ## Custom Riders

@@ -30,5 +30,5 @@ class TableSchema:
 
 @dataclass
 class ColumnSet:
-    pairs: list[tuple[str, str]]
-    tables: list[TableSchema] = field(default_factory=list)
+    table_names: list[str] = field(default_factory=list)
+    pairs: list[tuple[str, str]] = field(default_factory=list)

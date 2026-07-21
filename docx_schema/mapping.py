@@ -20,11 +20,11 @@ def propose_mapping(path: str) -> list[ColumnSet]:
         column_set = by_signature.get(signature)
         if column_set is None:
             pairs = [(header, _default_target_column(header)) for header in table.headers]
-            column_set = ColumnSet(pairs=pairs)
+            column_set = ColumnSet(table_names=[table.name], pairs=pairs)
             by_signature[signature] = column_set
             column_sets.append(column_set)
-
-        column_set.tables.append(project_table(table, column_set.pairs))
+        else:
+            column_set.table_names.append(table.name)
 
     return column_sets
 
@@ -61,17 +61,14 @@ def render_mapping_markdown(column_sets: list[ColumnSet]) -> str:
     for index, column_set in enumerate(column_sets, start=1):
         lines.append(f"## Column Set {index}")
         lines.append("")
+        if column_set.table_names:
+            lines.append(f"- Tables: {', '.join(column_set.table_names)}")
+            lines.append("")
         lines.append("| Extracted Column | Target Column |")
         lines.append("|---|---|")
         for source, target in column_set.pairs:
             lines.append(f"| {source} | {target} |")
         lines.append("")
-
-        for table in column_set.tables:
-            lines.append(f"### {table.name}")
-            lines.append("")
-            lines.extend(_render_wide_table_lines(table.columns))
-            lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -86,12 +83,19 @@ def parse_mapping_markdown(text: str) -> list[ColumnSet]:
         line = lines[index].strip()
 
         if re.match(r"^##\s+Column Set\s+\d+\s*$", line):
-            current_set = ColumnSet(pairs=[])
+            current_set = ColumnSet()
             column_sets.append(current_set)
             index += 1
             continue
 
         if current_set is None:
+            index += 1
+            continue
+
+        if line.startswith("- Tables:"):
+            table_names = line.split(":", 1)[1].strip()
+            if table_names:
+                current_set.table_names = [name.strip() for name in table_names.split(",") if name.strip()]
             index += 1
             continue
 
@@ -104,36 +108,9 @@ def parse_mapping_markdown(text: str) -> list[ColumnSet]:
                 index += 1
             continue
 
-        if line.startswith("### "):
-            table_name = line[4:].strip()
-            index += 1
-            while index < len(lines) and not lines[index].strip():
-                index += 1
-
-            if index >= len(lines):
-                break
-            if not lines[index].strip().startswith("|"):
-                continue
-
-            header = _parse_markdown_row(lines[index])
-            index += 1
-            if index < len(lines) and lines[index].strip().startswith("|"):
-                index += 1
-
-            rows: list[list[str]] = []
-            while index < len(lines) and lines[index].strip().startswith("|"):
-                row = _parse_markdown_row(lines[index])
-                padded = row + [""] * max(0, len(header) - len(row))
-                rows.append(padded[: len(header)])
-                index += 1
-
-            if header == TARGET_COLUMNS:
-                current_set.tables.append(TableSchema(name=table_name, columns=rows))
-            continue
-
         index += 1
 
-    if not any(column_set.tables for column_set in column_sets):
+    if not any(column_set.pairs for column_set in column_sets):
         raise ValueError("no tables found in mapping markdown")
 
     return column_sets
@@ -160,27 +137,33 @@ def render_schema_markdown(table: TableSchema) -> str:
     return "\n".join(lines)
 
 
-def write_schema_files(column_sets: list[ColumnSet], out_dir: str | Path) -> list[Path]:
+def write_schema_files(source_docx: str | Path, column_sets: list[ColumnSet], out_dir: str | Path) -> list[Path]:
     output_dir = Path(out_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     written: list[Path] = []
     seen_names: set[str] = set()
     seen_paths: set[Path] = set()
+    column_set_by_signature = {_signature_from_pairs(column_set.pairs): column_set for column_set in column_sets}
 
-    for column_set in column_sets:
-        for table in column_set.tables:
-            if table.name in seen_names:
-                raise ValueError(f"duplicate table name across column sets: {table.name}")
+    for table in _extract_docx_tables(str(source_docx)):
+        signature = _signature_from_headers(table.headers)
+        column_set = column_set_by_signature.get(signature)
+        if column_set is None:
+            raise ValueError(f"no column set found for table: {table.name}")
 
-            seen_names.add(table.name)
-            path = output_dir / f"{_slugify(table.name)}_schema.md"
-            if path in seen_paths:
-                raise ValueError(f"duplicate output schema filename: {path.name}")
+        if table.name in seen_names:
+            raise ValueError(f"duplicate table name across column sets: {table.name}")
 
-            seen_paths.add(path)
-            path.write_text(render_schema_markdown(table), encoding="utf-8")
-            written.append(path)
+        seen_names.add(table.name)
+        projected = project_table(table, column_set.pairs)
+        path = output_dir / f"{_slugify(table.name)}_schema.md"
+        if path in seen_paths:
+            raise ValueError(f"duplicate output schema filename: {path.name}")
+
+        seen_paths.add(path)
+        path.write_text(render_schema_markdown(projected), encoding="utf-8")
+        written.append(path)
 
     return written
 
@@ -297,6 +280,14 @@ def _default_target_column(header: str) -> str:
 def _normalize_header(value: str) -> str:
     cleaned = re.sub(r"[^a-z0-9]+", " ", value.lower())
     return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _signature_from_headers(headers: list[str]) -> tuple[str, ...]:
+    return tuple(_normalize_header(header) for header in headers)
+
+
+def _signature_from_pairs(pairs: list[tuple[str, str]]) -> tuple[str, ...]:
+    return tuple(_normalize_header(source) for source, _target in pairs)
 
 
 def _slugify(value: str) -> str:
