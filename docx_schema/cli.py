@@ -30,7 +30,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.handler(args)
     except ValueError as error:
-        print(f"error: {error}")
+        message = str(error).strip()
+        if message.startswith("error:"):
+            print(message)
+        else:
+            print(f"error: {message}")
         return 1
 
 
