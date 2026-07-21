@@ -494,9 +494,17 @@ def _looks_like_table_name(paragraph: ET.Element, text: str, ns: dict[str, str])
     style = (style_el.get(f"{{{ns['w']}}}val", "") if style_el is not None else "") or ""
     if any(marker in style.lower() for marker in ("heading", "title", "caption")):
         return True
-    # Fall back for unstyled captions: accept only short, heading-like lines so
-    # prose paragraphs are not mistaken for table names.
-    return len(text) <= 64 and len(text.split()) <= 8
+    # Fall back for unstyled captions: accept only short, heading-like lines and
+    # reject prose sentences or "Label: value" lines (e.g. "Used by: ...",
+    # "Routes to: Outflow Worker as a hard constraint.") so descriptive body text
+    # is never mistaken for a table name.
+    if len(text) > 48 or len(text.split()) > 6:
+        return False
+    if text[-1] in ".!?:;,":
+        return False
+    if ": " in text:
+        return False
+    return True
 
 
 def _schema_filename(value: str) -> str:

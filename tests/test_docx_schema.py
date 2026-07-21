@@ -455,6 +455,41 @@ class TestDocxSchema(unittest.TestCase):
                 ["Payment Events Table Definition Reference Guide Section One"],
             )
 
+    def test_label_line_before_table_is_not_used_as_table_name(self) -> None:
+        # A short "Label: value" line such as "Routes to: Outflow Worker as a
+        # hard constraint." previously passed the heading-like heuristic and
+        # became a table name; when it preceded two tables they collided with a
+        # "duplicate table name across column sets" error.
+        label = "Routes to: Outflow Worker as a hard constraint."
+        with tempfile.TemporaryDirectory() as td:
+            docx_path = Path(td) / "labels.docx"
+            block = f"""
+    <w:p><w:r><w:t>{html_escape(label)}</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Field</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Type</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>amount</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>decimal</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>"""
+            xml = (
+                '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                "<w:body>" + block + block + "</w:body></w:document>"
+            )
+            with zipfile.ZipFile(docx_path, "w") as archive:
+                archive.writestr("word/document.xml", xml)
+
+            column_sets = propose_mapping(str(docx_path))
+            self.assertEqual(column_sets[0].table_names, ["table_1", "table_2"])
+
+            with tempfile.TemporaryDirectory() as out_dir:
+                written = write_schema_files(str(docx_path), column_sets, out_dir)
+
+            self.assertEqual([path.name for path in written], ["table_1_schema.md", "table_2_schema.md"])
+
 
 if __name__ == "__main__":
     unittest.main()
