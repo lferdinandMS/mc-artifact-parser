@@ -150,12 +150,32 @@ class TestDocxSchema(unittest.TestCase):
 
             self.assertEqual(len(parsed), 1)
             self.assertEqual(len(written), 2)
-            customer_schema = (td_path / "schema" / "customer_schema.md").read_text(encoding="utf-8")
+            customer_schema = (td_path / "schema" / "Customer_schema.md").read_text(encoding="utf-8")
             self.assertIn("## Custom Riders", customer_schema)
             self.assertIn("## Provenance / Audit Columns", customer_schema)
             self.assertIn("_None defined._", customer_schema)
             self.assertNotIn("source_system", customer_schema)
             self.assertNotIn("load_id", customer_schema)
+
+    def test_write_schema_files_uses_simple_table_name_based_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            docx_path = td_path / "mapping.docx"
+            _write_docx(
+                docx_path,
+                [
+                    (
+                        "Customer Metadata",
+                        ["Name", "Data Type"],
+                        [["customer_id", "int"]],
+                    )
+                ],
+            )
+
+            written = write_schema_files(docx_path, parse_mapping_markdown(render_mapping_markdown(propose_mapping(str(docx_path)))), td_path / "schema")
+
+            self.assertEqual(len(written), 1)
+            self.assertTrue((td_path / "schema" / "Customer Metadata_schema.md").exists())
 
     def test_create_schema_cli_writes_one_file_per_table(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -184,8 +204,8 @@ class TestDocxSchema(unittest.TestCase):
             exit_code = main(["create-schema", f"@{docx_path}", f"@{mapping_path}", "--out-dir", str(out_dir)])
 
             self.assertEqual(exit_code, 0)
-            self.assertTrue((out_dir / "customer_schema.md").exists())
-            self.assertTrue((out_dir / "order_schema.md").exists())
+            self.assertTrue((out_dir / "Customer_schema.md").exists())
+            self.assertTrue((out_dir / "Order_schema.md").exists())
 
     def test_propose_mapping_cli_accepts_slash_command_and_at_source(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -261,8 +281,8 @@ class TestDocxSchema(unittest.TestCase):
 
             written = write_schema_files(docx_path, parsed, td_path / "schema")
             self.assertEqual(len(written), 2)
-            self.assertTrue((td_path / "schema" / "customer_schema.md").exists())
-            self.assertTrue((td_path / "schema" / "customer_metadata_schema.md").exists())
+            self.assertTrue((td_path / "schema" / "Customer_schema.md").exists())
+            self.assertTrue((td_path / "schema" / "Customer Metadata_schema.md").exists())
 
     def test_duplicate_table_name_across_column_sets_errors(self) -> None:
         mapping = """# Proposed Mapping

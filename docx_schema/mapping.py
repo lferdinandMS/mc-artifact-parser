@@ -161,7 +161,7 @@ def write_schema_files(source_docx: str | Path, column_sets: list[ColumnSet], ou
 
         seen_names.add(table.name)
         projected = project_table(table, column_set.pairs)
-        path = output_dir / f"{_slugify(table.name)}_schema.md"
+        path = output_dir / _schema_filename(table.name)
         if path in seen_paths:
             raise ValueError(f"duplicate output schema filename: {path.name}")
 
@@ -326,9 +326,11 @@ def _signature_from_pairs(pairs: list[tuple[str, str]]) -> tuple[str, ...]:
     )
 
 
-def _slugify(value: str) -> str:
-    cleaned = re.sub(r"[^a-zA-Z0-9]+", "_", value.strip()).strip("_")
-    return cleaned.lower() or "table"
+def _schema_filename(value: str) -> str:
+    cleaned = value.strip()
+    cleaned = re.sub(r"[<>:\"/\\|?*\x00-\x1f]+", "_", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return f"{cleaned or 'table'}_schema.md"
 
 
 def _local_name(tag: str) -> str:
