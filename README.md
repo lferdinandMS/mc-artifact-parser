@@ -69,6 +69,10 @@ per-table schema markdown content. Each file is named from the entity name.
 per-table human review mapping templates that preserve the parsed source values
 and leave the intended output structure for review.
 
+### Maintenance note
+
+When changing the portable docx_schema workflow or its CLI behavior, update [docx_schema/DISTRIBUTION.md](docx_schema/DISTRIBUTION.md) so the bundled documentation matches the implementation.
+
 ### Agent workflow orchestration
 
 Use `SchemaWorkflowAgent` to run a staged human-in-the-loop workflow:
