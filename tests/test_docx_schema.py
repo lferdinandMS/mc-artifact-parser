@@ -1,3 +1,5 @@
+import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -92,6 +94,19 @@ class TestDocxSchema(unittest.TestCase):
         self.assertIn("| Required | Nullable |", mapping)
         self.assertIn("| Purpose | Description |", mapping)
         self.assertIn("|  | Primary Key |", mapping)
+
+    def test_direct_entrypoint_works_when_package_is_invoked_as_script(self) -> None:
+        package_dir = Path(__file__).resolve().parent.parent / "docx_schema"
+        result = subprocess.run(
+            [sys.executable, str(package_dir / "__main__.py"), "--help"],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=package_dir,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("propose-mapping", result.stdout)
 
     def test_project_table_places_values_using_crosswalk(self) -> None:
         table = SourceTable(
