@@ -110,7 +110,10 @@ def parse_mapping_markdown(text: str) -> list[ColumnSet]:
             while index < len(lines) and not lines[index].strip():
                 index += 1
 
-            if index >= len(lines) or not lines[index].strip().startswith("|"):
+            if index >= len(lines):
+                break
+            if not lines[index].strip().startswith("|"):
+                index += 1
                 continue
 
             header = _parse_markdown_row(lines[index])
