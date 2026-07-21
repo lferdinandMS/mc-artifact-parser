@@ -5,6 +5,8 @@ Portable source bundle for a two-command workflow:
 1. `python -m docx_schema propose-mapping <docx> --out <mapping.md>`
 2. `python -m docx_schema create-schema <docx> <mapping.md> --out-dir <dir>`
 
+The current implementation treats each distinct header signature as a separate column set, emits a crosswalk for it, and then uses the reviewed mapping plus the source DOCX to generate one schema markdown file per table.
+
 ## Run it
 
 ```bash
@@ -19,12 +21,18 @@ python -m docx_schema create-schema ./sample.docx @./mapping.md --out-dir ./sche
 ```markdown
 ## Column Set 1
 
- - Tables: Customer
+- Tables: Customer
 
 | Extracted Column | Target Column |
 |---|---|
-| Name | Column |
-| Data Type | Type |
+| Field | Column |
+| Type | Type |
+| Required | Nullable |
+| Purpose | Description |
+|  | Primary Key |
+|  | Foreign Key |
+|  | Details |
+|  | Source |
 ```
 
 `create-schema` reads the source `.docx` plus the reviewed mapping and writes one `{table}_schema.md` per table, each ending with visible rider stubs:
@@ -105,8 +113,8 @@ class TableSchema:
 
 @dataclass
 class ColumnSet:
-    pairs: list[tuple[str, str]]
-    tables: list[TableSchema] = field(default_factory=list)
+    table_names: list[str] = field(default_factory=list)
+    pairs: list[tuple[str, str]] = field(default_factory=list)
 ```
 
 ### `mapping.py`
@@ -134,11 +142,11 @@ def propose_mapping(path: str) -> list[ColumnSet]:
         column_set = by_signature.get(signature)
         if column_set is None:
             pairs = [(header, _default_target_column(header)) for header in table.headers]
-            column_set = ColumnSet(pairs=pairs)
+            column_set = ColumnSet(table_names=[table.name], pairs=pairs)
             by_signature[signature] = column_set
             column_sets.append(column_set)
-
-        column_set.tables.append(project_table(table, column_set.pairs))
+        else:
+            column_set.table_names.append(table.name)
 
     return column_sets
 
@@ -175,17 +183,18 @@ def render_mapping_markdown(column_sets: list[ColumnSet]) -> str:
     for index, column_set in enumerate(column_sets, start=1):
         lines.append(f"## Column Set {index}")
         lines.append("")
+        if column_set.table_names:
+            lines.append(f"- Tables: {', '.join(column_set.table_names)}")
+            lines.append("")
         lines.append("| Extracted Column | Target Column |")
         lines.append("|---|---|")
+        seen_targets = {target for _, target in column_set.pairs if target}
         for source, target in column_set.pairs:
             lines.append(f"| {source} | {target} |")
+        for target in TARGET_COLUMNS:
+            if target not in seen_targets:
+                lines.append(f"|  | {target} |")
         lines.append("")
-
-        for table in column_set.tables:
-            lines.append(f"### {table.name}")
-            lines.append("")
-            lines.extend(_render_wide_table_lines(table.columns))
-            lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -200,12 +209,19 @@ def parse_mapping_markdown(text: str) -> list[ColumnSet]:
         line = lines[index].strip()
 
         if re.match(r"^##\s+Column Set\s+\d+\s*$", line):
-            current_set = ColumnSet(pairs=[])
+            current_set = ColumnSet()
             column_sets.append(current_set)
             index += 1
             continue
 
         if current_set is None:
+            index += 1
+            continue
+
+        if line.startswith("- Tables:"):
+            table_names = line.split(":", 1)[1].strip()
+            if table_names:
+                current_set.table_names = [name.strip() for name in table_names.split(",") if name.strip()]
             index += 1
             continue
 
@@ -218,34 +234,9 @@ def parse_mapping_markdown(text: str) -> list[ColumnSet]:
                 index += 1
             continue
 
-        if line.startswith("### "):
-            table_name = line[4:].strip()
-            index += 1
-            while index < len(lines) and not lines[index].strip():
-                index += 1
-
-            if index >= len(lines) or not lines[index].strip().startswith("|"):
-                continue
-
-            header = _parse_markdown_row(lines[index])
-            index += 1
-            if index < len(lines) and lines[index].strip().startswith("|"):
-                index += 1
-
-            rows: list[list[str]] = []
-            while index < len(lines) and lines[index].strip().startswith("|"):
-                row = _parse_markdown_row(lines[index])
-                padded = row + [""] * max(0, len(header) - len(row))
-                rows.append(padded[: len(header)])
-                index += 1
-
-            if header == TARGET_COLUMNS:
-                current_set.tables.append(TableSchema(name=table_name, columns=rows))
-            continue
-
         index += 1
 
-    if not any(column_set.tables for column_set in column_sets):
+    if not any(column_set.pairs for column_set in column_sets):
         raise ValueError("no tables found in mapping markdown")
 
     return column_sets
@@ -272,22 +263,33 @@ def render_schema_markdown(table: TableSchema) -> str:
     return "\n".join(lines)
 
 
-def write_schema_files(column_sets: list[ColumnSet], out_dir: str | Path) -> list[Path]:
+def write_schema_files(source_docx: str | Path, column_sets: list[ColumnSet], out_dir: str | Path) -> list[Path]:
     output_dir = Path(out_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     written: list[Path] = []
     seen_names: set[str] = set()
+    seen_paths: set[Path] = set()
+    column_set_by_signature = {_signature_from_pairs(column_set.pairs): column_set for column_set in column_sets}
 
-    for column_set in column_sets:
-        for table in column_set.tables:
-            if table.name in seen_names:
-                raise ValueError(f"error: duplicate table name across column sets: {table.name}")
+    for table in _extract_docx_tables(str(source_docx)):
+        signature = _signature_from_headers(table.headers)
+        column_set = column_set_by_signature.get(signature)
+        if column_set is None:
+            raise ValueError(f"no column set found for table: {table.name}")
 
-            seen_names.add(table.name)
-            path = output_dir / f"{_slugify(table.name)}_schema.md"
-            path.write_text(render_schema_markdown(table), encoding="utf-8")
-            written.append(path)
+        if table.name in seen_names:
+            raise ValueError(f"duplicate table name across column sets: {table.name}")
+
+        seen_names.add(table.name)
+        projected = project_table(table, column_set.pairs)
+        path = output_dir / f"{_slugify(table.name)}_schema.md"
+        if path in seen_paths:
+            raise ValueError(f"duplicate output schema filename: {path.name}")
+
+        seen_paths.add(path)
+        path.write_text(render_schema_markdown(projected), encoding="utf-8")
+        written.append(path)
 
     return written
 
@@ -377,22 +379,44 @@ def _default_target_column(header: str) -> str:
         "column": "Column",
         "column name": "Column",
         "name": "Column",
+        "field": "Column",
         "type": "Type",
         "data type": "Type",
         "datatype": "Type",
         "nullable": "Nullable",
         "null": "Nullable",
+        "required": "Nullable",
+        "required field": "Nullable",
+        "optional": "Nullable",
         "primary key": "Primary Key",
         "pk": "Primary Key",
         "foreign key": "Foreign Key",
         "fk": "Foreign Key",
         "details": "Details",
+        "detail": "Details",
+        "notes": "Details",
         "description": "Description",
+        "purpose": "Description",
         "source": "Source",
     }
 
     if key in aliases:
         return aliases[key]
+
+    if key.startswith("field") or key.startswith("column"):
+        return "Column"
+
+    if key.startswith("type") or key.startswith("data type") or key.startswith("datatype"):
+        return "Type"
+
+    if key.startswith("required") or key.startswith("nullable") or key.startswith("optional"):
+        return "Nullable"
+
+    if key.startswith("purpose") or key.startswith("description"):
+        return "Description"
+
+    if key.startswith("detail") or key.startswith("note"):
+        return "Details"
 
     for target in TARGET_COLUMNS:
         if key == _normalize_header(target):
@@ -404,6 +428,18 @@ def _default_target_column(header: str) -> str:
 def _normalize_header(value: str) -> str:
     cleaned = re.sub(r"[^a-z0-9]+", " ", value.lower())
     return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _signature_from_headers(headers: list[str]) -> tuple[str, ...]:
+    return tuple(_normalize_header(header) for header in headers)
+
+
+def _signature_from_pairs(pairs: list[tuple[str, str]]) -> tuple[str, ...]:
+    return tuple(
+        _normalize_header(source)
+        for source, _target in pairs
+        if source and _normalize_header(source)
+    )
 
 
 def _slugify(value: str) -> str:
@@ -421,8 +457,10 @@ def _local_name(tag: str) -> str:
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
+from docx_schema.docx_reader import normalize_docx_path
 from docx_schema.mapping import parse_mapping_markdown, propose_mapping, render_mapping_markdown, write_schema_files
 
 
@@ -435,7 +473,8 @@ def build_parser() -> argparse.ArgumentParser:
     propose.add_argument("--out", default="./mapping.md", help="Output mapping markdown path")
     propose.set_defaults(handler=_run_propose_mapping)
 
-    create = subparsers.add_parser("create-schema", help="Create per-table schema files from mapping markdown.")
+    create = subparsers.add_parser("create-schema", help="Create per-table schema files from source DOCX plus reviewed mapping markdown.")
+    create.add_argument("source", help="Path to source .docx (leading @ allowed)")
     create.add_argument("mapping", help="Path to mapping markdown (leading @ allowed)")
     create.add_argument("--out-dir", default="./schema", help="Output directory for schema markdown files")
     create.set_defaults(handler=_run_create_schema)
@@ -444,39 +483,52 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    argv = _normalize_argv(argv)
     parser = build_parser()
     args = parser.parse_args(argv)
 
     try:
         return args.handler(args)
     except ValueError as error:
-        print(f"error: {error}")
+        message = str(error).strip()
+        if message.startswith("error:"):
+            print(message)
+        else:
+            print(f"error: {message}")
         return 1
 
 
 def _run_propose_mapping(args: argparse.Namespace) -> int:
-    column_sets = propose_mapping(args.source)
+    column_sets = propose_mapping(str(normalize_docx_path(args.source)))
     text = render_mapping_markdown(column_sets)
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(text, encoding="utf-8")
 
-    table_count = sum(len(column_set.tables) for column_set in column_sets)
+    table_count = sum(len(column_set.table_names) for column_set in column_sets)
     print(f"Wrote mapping for {table_count} table(s) across {len(column_sets)} column set(s)")
     print(out_path)
     return 0
 
 
 def _run_create_schema(args: argparse.Namespace) -> int:
+    source_path = normalize_docx_path(args.source)
     mapping_path = args.mapping[1:] if args.mapping.startswith("@") else args.mapping
     text = Path(mapping_path).read_text(encoding="utf-8")
     column_sets = parse_mapping_markdown(text)
-    written = write_schema_files(column_sets, args.out_dir)
+    written = write_schema_files(source_path, column_sets, args.out_dir)
 
     print(f"Wrote {len(written)} schema file(s) from {len(column_sets)} column set(s)")
     for path in written:
         print(path)
     return 0
+
+
+def _normalize_argv(argv: list[str]) -> list[str]:
+    if argv and argv[0].startswith("/"):
+        return [argv[0][1:], *argv[1:]]
+    return argv
 
 
 if __name__ == "__main__":
