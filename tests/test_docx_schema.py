@@ -169,7 +169,9 @@ class TestDocxSchema(unittest.TestCase):
             exit_code = main(["/propose-mapping", f"@{docx_path}", "--out", str(mapping_path)])
 
             self.assertEqual(exit_code, 0)
-            self.assertIn("### Customer", mapping_path.read_text(encoding="utf-8"))
+            text = mapping_path.read_text(encoding="utf-8")
+            self.assertIn("### Customer", text)
+            self.assertIn("customer_id", text)
 
     def test_parse_mapping_errors_when_no_tables_found(self) -> None:
         with self.assertRaisesRegex(ValueError, "no tables found in mapping markdown"):
@@ -246,7 +248,7 @@ class TestDocxSchema(unittest.TestCase):
         parsed = parse_mapping_markdown(mapping)
 
         with tempfile.TemporaryDirectory() as td:
-            with self.assertRaisesRegex(ValueError, "error: duplicate table name across column sets: Customer"):
+            with self.assertRaisesRegex(ValueError, "duplicate table name across column sets: Customer"):
                 write_schema_files(parsed, Path(td) / "schema")
 
     def test_rejects_oversized_document_xml(self) -> None:

@@ -7,6 +7,7 @@ entity (XXE = XML eXternal Entity) attacks.
 
 from __future__ import annotations
 
+import re
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,7 +60,7 @@ def _read_document_xml(path: str) -> bytes:
 
         xml = archive.read(info)
 
-    if b"<!DOCTYPE" in xml or b"<!ENTITY" in xml:
+    if re.search(br"<!\s*(doctype|entity)\b", xml, flags=re.IGNORECASE):
         raise ValueError("DOCX word/document.xml contains disallowed XML declarations.")
 
     return xml
