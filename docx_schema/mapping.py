@@ -164,6 +164,7 @@ def write_schema_files(column_sets: list[ColumnSet], out_dir: str | Path) -> lis
 
     written: list[Path] = []
     seen_names: set[str] = set()
+    seen_paths: set[Path] = set()
 
     for column_set in column_sets:
         for table in column_set.tables:
@@ -172,6 +173,10 @@ def write_schema_files(column_sets: list[ColumnSet], out_dir: str | Path) -> lis
 
             seen_names.add(table.name)
             path = output_dir / f"{_slugify(table.name)}_schema.md"
+            if path in seen_paths:
+                raise ValueError(f"error: duplicate output schema filename: {path.name}")
+
+            seen_paths.add(path)
             path.write_text(render_schema_markdown(table), encoding="utf-8")
             written.append(path)
 
