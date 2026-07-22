@@ -4,7 +4,6 @@ import argparse
 import sys
 from pathlib import Path
 
-from docx_schema.docx_reader import normalize_docx_path
 from docx_schema.mapping import (
     parse_mapping_markdown,
     propose_mapping,
@@ -98,6 +97,15 @@ def _normalize_argv(argv: list[str]) -> list[str]:
     if argv and argv[0].startswith("/"):
         return [argv[0][1:], *argv[1:]]
     return argv
+
+
+def normalize_docx_path(raw: str) -> Path:
+    """Strip a leading ``@`` (chat-style reference) and expand the path."""
+
+    cleaned = raw.strip()
+    if cleaned.startswith("@"):
+        cleaned = cleaned[1:]
+    return Path(cleaned).expanduser()
 
 
 if __name__ == "__main__":

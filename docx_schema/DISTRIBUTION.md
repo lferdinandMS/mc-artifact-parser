@@ -6,7 +6,7 @@ Portable source bundle for a two-command workflow:
 2. `python -m docx_schema create-schema <docx|svg> <mapping.md> --out-dir <dir>`
 3. `python -m docx_schema extract-relationships <svg> --out <relationships.md>` (SVG only)
 
-Both commands accept either a DOCX (Word) file or an SVG (Scalable Vector Graphics) diagram (`.svg` or `.xml`). Extraction is handled by a small per-source subpackage (`docx_schema/sources/`): a registry tries each `SourceReader` in turn and falls back to the DOCX reader for unrecognized files. `SvgReader` claims `.svg`/`.xml`; everything else is read as DOCX.
+Both commands accept a DOCX (Word) file, an SVG (Scalable Vector Graphics) diagram (`.svg` or `.xml`), or a plain text / Markdown file (`.txt`, `.md`, `.markdown`). Extraction is handled by a small per-source subpackage (`docx_schema/sources/`): a registry tries each `SourceReader` in turn and falls back to the DOCX reader for unrecognized files. `SvgReader` claims `.svg`/`.xml`; `TextSchemaReader` claims `.txt`/`.md`/`.markdown` (parsing Markdown pipe tables literally and coercing free-text column lines onto the target columns); everything else is read as DOCX.
 
 The current implementation treats each distinct header signature as a separate column set, emits a crosswalk for it, and then uses the reviewed mapping plus the source file to generate one schema markdown file per table.
 
@@ -116,21 +116,6 @@ __all__ = [
     "render_schema_markdown",
     "write_schema_files",
 ]
-```
-
-### `docx_reader.py`
-
-```python
-from __future__ import annotations
-
-from pathlib import Path
-
-
-def normalize_docx_path(path: str | Path) -> str:
-    candidate = Path(path)
-    if candidate.is_absolute():
-        return str(candidate)
-    return str((Path.cwd() / candidate).resolve())
 ```
 
 ### `models.py`
@@ -510,10 +495,11 @@ from docx_schema.models import Relationship, SourceTable
 from docx_schema.sources.base import SourceReader
 from docx_schema.sources.docx import DocxReader
 from docx_schema.sources.svg import SvgReader, extract_relationships
+from docx_schema.sources.text import TextSchemaReader
 
 # Registry of source readers, tried in order. DocxReader is the default
 # fallback so unrecognized files still get the clear DOCX error message.
-_READERS: list[SourceReader] = [SvgReader()]
+_READERS: list[SourceReader] = [SvgReader(), TextSchemaReader()]
 
 _DEFAULT_READER: SourceReader = DocxReader()
 
@@ -575,6 +561,255 @@ def entity_name_from_path(path: str, fallback: str = "table_1") -> str:
     cleaned = re.sub(r"[^A-Za-z0-9]+", " ", Path(path).stem).strip()
     cleaned = re.sub(r"\s+", " ", cleaned)
     return cleaned or fallback
+```
+
+### `sources/text_columns.py`
+
+```python
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+
+@dataclass
+class ParsedColumn:
+    name: str
+    data_type: str | None = None
+    nullable: bool | None = None
+    primary_key: bool = False
+    foreign_key: str | None = None
+    description: str | None = None
+
+
+_DESCRIPTION_SEPARATOR = re.compile(r"\s+[\u2014-]\s+")
+_TYPE_PAREN = re.compile(r"^(?P<name>.+?)\s*\((?P<type>[^)]+)\)\s*(?P<trailing>.*)$")
+_TYPE_COLON = re.compile(r"^(?P<name>.+?)\s*:\s*(?P<type>[A-Za-z_][\w()\[\],\s]*)\s*(?P<trailing>.*)$")
+_COMMON_TYPE_PREFIXES = {
+    "bigint", "binary", "bool", "boolean", "bpchar", "char", "character",
+    "date", "datetime", "decimal", "double", "enum", "float", "geography",
+    "geometry", "int", "integer", "interval", "json", "jsonb", "map",
+    "numeric", "real", "set", "smallint", "string", "text", "time",
+    "timestamp", "tinyint", "uuid", "varchar", "varbinary",
+}
+_METADATA_PREFIX = re.compile(
+    r"\b("
+    r"not\s+null|required|not\s+nullable|non[-\s]?nullable|nullable|optional|null\s+allowed|"
+    r"primary\s+key|pk|references\s+[A-Za-z_][\w.]*|foreign\s+key\s+to\s+[A-Za-z_][\w.]*"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def parse_column_line(line: str) -> ParsedColumn | None:
+    working = line.strip()
+    if not working:
+        return None
+
+    description: str | None = None
+    description_match = _DESCRIPTION_SEPARATOR.search(working)
+    if description_match:
+        description = working[description_match.end():].strip() or None
+        working = working[:description_match.start()].strip()
+
+    name = working
+    data_type: str | None = None
+
+    paren_match = _TYPE_PAREN.match(working)
+    if paren_match:
+        name = paren_match.group("name").strip()
+        type_or_description = paren_match.group("type").strip()
+        if _looks_like_type(type_or_description):
+            data_type = type_or_description or None
+        else:
+            description = type_or_description or description
+    else:
+        colon_match = _TYPE_COLON.match(working)
+        if colon_match:
+            name = colon_match.group("name").strip()
+            raw_type = colon_match.group("type").strip()
+            metadata_in_type = _METADATA_PREFIX.search(raw_type)
+            if metadata_in_type:
+                raw_type = raw_type[:metadata_in_type.start()].strip()
+            data_type = raw_type or None
+        else:
+            metadata_match = _METADATA_PREFIX.search(working)
+            if metadata_match:
+                name = working[:metadata_match.start()].strip() or working
+
+    lowered = line.lower()
+    nullable: bool | None = None
+    if re.search(r"\b(not\s+null|required|not\s+nullable|non[-\s]?nullable)\b", lowered):
+        nullable = False
+    elif re.search(r"\b(nullable|optional|null\s+allowed)\b", lowered):
+        nullable = True
+
+    primary_key = bool(re.search(r"\b(primary\s+key|pk)\b", lowered))
+    foreign_key = _infer_foreign_key(name, line)
+    name = name.strip() or working
+
+    return ParsedColumn(
+        name=name,
+        data_type=data_type,
+        nullable=nullable,
+        primary_key=primary_key,
+        foreign_key=foreign_key,
+        description=description,
+    )
+
+
+def _looks_like_type(value: str) -> bool:
+    if not value:
+        return False
+    normalized = value.strip().lower()
+    if " " in normalized and not any(token in normalized.split()[:1] for token in _COMMON_TYPE_PREFIXES):
+        return False
+    first_token = normalized.split()[0]
+    if first_token in _COMMON_TYPE_PREFIXES:
+        return True
+    return bool(re.fullmatch(r"[A-Za-z_][\w]*(?:\s*\([^)]*\))?", value.strip()))
+
+
+def _infer_foreign_key(name: str, line: str) -> str | None:
+    reference_match = re.search(r"\breferences\s+([A-Za-z_][\w.]*)", line, flags=re.IGNORECASE)
+    if reference_match:
+        reference_name = reference_match.group(1).split(".", 1)[0].strip()
+        return reference_name or None
+    normalized = name.strip()
+    if normalized.lower().endswith(" id"):
+        candidate = normalized[:-3].strip()
+        return candidate or None
+    if normalized.lower().endswith("_id"):
+        candidate = normalized[:-3].strip()
+        return candidate or None
+    return None
+```
+
+### `sources/text.py`
+
+```python
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from docx_schema.models import SourceTable, TARGET_COLUMNS
+from docx_schema.sources.base import MAX_SOURCE_BYTES, entity_name_from_path
+from docx_schema.sources.text_columns import ParsedColumn, parse_column_line
+
+_HEADING = re.compile(r"^(#{1,6})\s+(.+)$")
+_ENTITY_PREFIX = re.compile(r"^(?:entity|table)\s*[:\-]\s*(.+)$", re.IGNORECASE)
+_BULLET = re.compile(r"^[\-\*\u2022]\s+")
+_SEPARATOR_CELL = re.compile(r"^:?-+:?$")
+
+
+class TextSchemaReader:
+    """Reads schema tables from .txt / .md sources."""
+
+    def can_read(self, path: str) -> bool:
+        return path.lower().endswith((".md", ".markdown", ".txt"))
+
+    def read(self, path: str) -> list[SourceTable]:
+        return _extract_text_tables(path)
+
+
+def _extract_text_tables(path: str) -> list[SourceTable]:
+    data = Path(path).read_bytes()
+    if len(data) > MAX_SOURCE_BYTES:
+        raise ValueError("Text source exceeds the maximum supported size.")
+    if re.search(br"<!\s*(doctype|entity)\b", data, flags=re.IGNORECASE):
+        raise ValueError("Source contains disallowed XML declarations.")
+
+    lines = data.decode("utf-8", errors="replace").splitlines()
+
+    tables: list[SourceTable] = []
+    current_name: str | None = None
+    pipe_lines: list[str] = []
+    free_rows: list[list[str]] = []
+
+    def flush() -> None:
+        nonlocal pipe_lines, free_rows
+        name = current_name or entity_name_from_path(path)
+        if pipe_lines:
+            table = _table_from_pipe_block(pipe_lines, name)
+            if table is not None:
+                tables.append(table)
+        elif free_rows:
+            tables.append(SourceTable(name=name, headers=list(TARGET_COLUMNS), rows=free_rows))
+        pipe_lines = []
+        free_rows = []
+
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped:
+            continue
+
+        heading = _HEADING.match(stripped)
+        if heading:
+            flush()
+            heading_text = heading.group(2).strip()
+            prefix = _ENTITY_PREFIX.match(heading_text)
+            current_name = prefix.group(1).strip() if prefix else heading_text
+            continue
+
+        prefix = _ENTITY_PREFIX.match(stripped)
+        if prefix:
+            flush()
+            current_name = prefix.group(1).strip()
+            continue
+
+        if stripped.startswith("|") and stripped.endswith("|"):
+            pipe_lines.append(stripped)
+            continue
+
+        if pipe_lines:
+            continue
+
+        parsed = parse_column_line(_BULLET.sub("", stripped))
+        if parsed is not None and parsed.name:
+            free_rows.append(_to_target_row(parsed))
+
+    flush()
+
+    if not tables:
+        raise ValueError(f"No schema tables could be extracted from {path}.")
+
+    return tables
+
+
+def _table_from_pipe_block(pipe_lines: list[str], name: str) -> SourceTable | None:
+    rows = [_split_pipe_row(line) for line in pipe_lines]
+    rows = [row for row in rows if row and not _is_separator_row(row)]
+    if not rows:
+        return None
+    headers = rows[0]
+    data_rows = rows[1:]
+    return SourceTable(name=name, headers=headers, rows=data_rows)
+
+
+def _split_pipe_row(line: str) -> list[str]:
+    trimmed = line.strip()
+    if trimmed.startswith("|"):
+        trimmed = trimmed[1:]
+    if trimmed.endswith("|"):
+        trimmed = trimmed[:-1]
+    return [cell.strip() for cell in trimmed.split("|")]
+
+
+def _is_separator_row(row: list[str]) -> bool:
+    return all(_SEPARATOR_CELL.match(cell) is not None for cell in row if cell) and any(row)
+
+
+def _to_target_row(parsed: ParsedColumn) -> list[str]:
+    index = {name: position for position, name in enumerate(TARGET_COLUMNS)}
+    row = [""] * len(TARGET_COLUMNS)
+    row[index["Column"]] = parsed.name
+    row[index["Type"]] = parsed.data_type or ""
+    row[index["Nullable"]] = {True: "Yes", False: "No", None: ""}[parsed.nullable]
+    row[index["Primary Key"]] = "Yes" if parsed.primary_key else ""
+    row[index["Foreign Key"]] = parsed.foreign_key or ""
+    row[index["Description"]] = parsed.description or ""
+    return row
 ```
 
 ### `sources/docx.py`
@@ -1107,7 +1342,6 @@ import argparse
 import sys
 from pathlib import Path
 
-from docx_schema.docx_reader import normalize_docx_path
 from docx_schema.mapping import (
     parse_mapping_markdown,
     propose_mapping,
@@ -1201,6 +1435,15 @@ def _normalize_argv(argv: list[str]) -> list[str]:
     if argv and argv[0].startswith("/"):
         return [argv[0][1:], *argv[1:]]
     return argv
+
+
+def normalize_docx_path(raw: str) -> Path:
+    """Strip a leading ``@`` (chat-style reference) and expand the path."""
+
+    cleaned = raw.strip()
+    if cleaned.startswith("@"):
+        cleaned = cleaned[1:]
+    return Path(cleaned).expanduser()
 
 
 if __name__ == "__main__":

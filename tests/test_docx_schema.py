@@ -16,8 +16,9 @@ from docx_schema.mapping import (
     write_schema_files,
 )
 from docx_schema.models import Relationship, SourceTable, TARGET_COLUMNS
-from docx_schema.sources import read_relationships
+from docx_schema.sources import read_relationships, read_tables
 from docx_schema.sources.svg import extract_relationships
+from docx_schema.sources.text_columns import parse_column_line
 
 
 def _docx_xml(tables: list[tuple[str, list[str], list[list[str]]]]) -> str:
@@ -667,6 +668,112 @@ class TestSvgRelationships(unittest.TestCase):
     def test_render_relationships_markdown_empty(self) -> None:
         text = render_relationships_markdown([])
         self.assertIn("_No relationships found._", text)
+
+
+class TestColumnLineParsing(unittest.TestCase):
+    def test_paren_type_with_primary_key_and_foreign_key(self) -> None:
+        parsed = parse_column_line("customer_id (uuid) primary key")
+        assert parsed is not None
+        self.assertEqual(parsed.name, "customer_id")
+        self.assertEqual(parsed.data_type, "uuid")
+        self.assertTrue(parsed.primary_key)
+        self.assertEqual(parsed.foreign_key, "customer")
+
+    def test_colon_type_and_nullable(self) -> None:
+        parsed = parse_column_line("email: string not null")
+        assert parsed is not None
+        self.assertEqual(parsed.name, "email")
+        self.assertEqual(parsed.data_type, "string")
+        self.assertFalse(parsed.nullable)
+
+    def test_description_after_dash(self) -> None:
+        parsed = parse_column_line("status (string) - current lifecycle state")
+        assert parsed is not None
+        self.assertEqual(parsed.name, "status")
+        self.assertEqual(parsed.data_type, "string")
+        self.assertEqual(parsed.description, "current lifecycle state")
+
+    def test_references_infers_foreign_key(self) -> None:
+        parsed = parse_column_line("account_ref references account")
+        assert parsed is not None
+        self.assertEqual(parsed.foreign_key, "account")
+
+    def test_blank_line_returns_none(self) -> None:
+        self.assertIsNone(parse_column_line("   "))
+
+
+class TestTextSchemaReader(unittest.TestCase):
+    def test_free_text_entity_maps_to_target_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "notes.txt"
+            source.write_text(
+                "Entity: Customer\n"
+                "- customer_id (uuid) primary key\n"
+                "- email: string not null\n"
+                "- created_at (timestamp)\n",
+                encoding="utf-8",
+            )
+
+            tables = read_tables(str(source))
+            self.assertEqual(len(tables), 1)
+            self.assertEqual(tables[0].name, "Customer")
+            self.assertEqual(tables[0].headers, TARGET_COLUMNS)
+
+            column_sets = propose_mapping(str(source))
+            self.assertEqual(column_sets[0].table_names, ["Customer"])
+            self.assertEqual(
+                column_sets[0].pairs,
+                [(target, target) for target in TARGET_COLUMNS],
+            )
+
+            mapping = render_mapping_markdown(column_sets)
+            with tempfile.TemporaryDirectory() as out_dir:
+                written = write_schema_files(str(source), parse_mapping_markdown(mapping), out_dir)
+                schema = written[0].read_text(encoding="utf-8")
+
+            self.assertIn("# Customer Schema", schema)
+            self.assertIn("customer_id", schema)
+            self.assertIn("uuid", schema)
+            self.assertIn("| email | string | No |", schema)
+
+    def test_markdown_headings_and_pipe_table(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "schema.md"
+            source.write_text(
+                "# Orders\n"
+                "| Column | Type |\n"
+                "|---|---|\n"
+                "| order_id | int |\n"
+                "| total | decimal |\n",
+                encoding="utf-8",
+            )
+
+            tables = read_tables(str(source))
+            self.assertEqual(len(tables), 1)
+            self.assertEqual(tables[0].name, "Orders")
+            self.assertEqual(tables[0].headers, ["Column", "Type"])
+            self.assertEqual(tables[0].rows, [["order_id", "int"], ["total", "decimal"]])
+
+            column_sets = propose_mapping(str(source))
+            self.assertEqual(
+                column_sets[0].pairs,
+                [("Column", "Column"), ("Type", "Type")],
+            )
+
+    def test_no_heading_uses_filename_entity(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "payment events.txt"
+            source.write_text("transaction_id (uuid) primary key\n", encoding="utf-8")
+
+            tables = read_tables(str(source))
+            self.assertEqual(tables[0].name, "payment events")
+
+    def test_empty_text_source_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "blank.txt"
+            source.write_text("\n\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "No schema tables"):
+                read_tables(str(source))
 
 
 if __name__ == "__main__":
