@@ -9,16 +9,16 @@ from docx_schema.mapping import parse_mapping_markdown, propose_mapping, render_
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m docx_schema", description="Create mapping and schema markdown files from DOCX tables.")
+    parser = argparse.ArgumentParser(prog="python -m docx_schema", description="Create mapping and schema markdown files from DOCX or SVG sources.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    propose = subparsers.add_parser("propose-mapping", help="Create a self-contained mapping markdown from a DOCX file.")
-    propose.add_argument("source", help="Path to source .docx")
+    propose = subparsers.add_parser("propose-mapping", help="Create a self-contained mapping markdown from a DOCX or SVG file.")
+    propose.add_argument("source", help="Path to source .docx or .svg")
     propose.add_argument("--out", default="./mapping.md", help="Output mapping markdown path")
     propose.set_defaults(handler=_run_propose_mapping)
 
-    create = subparsers.add_parser("create-schema", help="Create per-table schema files from source DOCX plus reviewed mapping markdown.")
-    create.add_argument("source", help="Path to source .docx (leading @ allowed)")
+    create = subparsers.add_parser("create-schema", help="Create per-table schema files from a source DOCX/SVG plus reviewed mapping markdown.")
+    create.add_argument("source", help="Path to source .docx or .svg (leading @ allowed)")
     create.add_argument("mapping", help="Path to mapping markdown (leading @ allowed)")
     create.add_argument("--out-dir", default="./schema", help="Output directory for schema markdown files")
     create.set_defaults(handler=_run_create_schema)

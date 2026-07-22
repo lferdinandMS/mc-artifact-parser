@@ -491,5 +491,72 @@ class TestDocxSchema(unittest.TestCase):
             self.assertEqual([path.name for path in written], ["table_1_schema.md", "table_2_schema.md"])
 
 
+class TestSvgExtraction(unittest.TestCase):
+    def _write_svg(self, path: Path, body: str) -> None:
+        xml = f'<svg xmlns="http://www.w3.org/2000/svg">{body}</svg>'
+        path.write_text(xml, encoding="utf-8")
+
+    def test_geometry_two_columns_extracts_column_type_pairs(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            svg_path = Path(td) / "PSP Ledger.svg"
+            body = (
+                '<text x="10" y="10">Column</text><text x="200" y="10">Type</text>'
+                '<text x="10" y="30">amount</text><text x="200" y="30">decimal</text>'
+                '<text x="10" y="50">currency</text><text x="200" y="50">string</text>'
+            )
+            self._write_svg(svg_path, body)
+
+            column_sets = propose_mapping(str(svg_path))
+
+            self.assertEqual(column_sets[0].table_names, ["PSP Ledger"])
+            self.assertEqual(column_sets[0].pairs, [("Column", "Column"), ("Type", "Type")])
+
+            mapping = render_mapping_markdown(column_sets)
+            with tempfile.TemporaryDirectory() as out_dir:
+                written = write_schema_files(str(svg_path), parse_mapping_markdown(mapping), out_dir)
+                self.assertEqual([path.name for path in written], ["PSP Ledger_schema.md"])
+                content = written[0].read_text(encoding="utf-8")
+
+            self.assertIn("| amount | decimal |", content)
+            self.assertIn("| currency | string |", content)
+
+    def test_inline_label_value_text_nodes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            svg_path = Path(td) / "inline.svg"
+            body = (
+                '<text x="0" y="0">amount: decimal</text>'
+                '<text x="0" y="0">currency: string</text>'
+            )
+            self._write_svg(svg_path, body)
+
+            column_sets = propose_mapping(str(svg_path))
+            with tempfile.TemporaryDirectory() as out_dir:
+                written = write_schema_files(
+                    str(svg_path), parse_mapping_markdown(render_mapping_markdown(column_sets)), out_dir
+                )
+                content = written[0].read_text(encoding="utf-8")
+
+            self.assertIn("| amount | decimal |", content)
+            self.assertIn("| currency | string |", content)
+
+    def test_rejects_doctype_in_svg(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            svg_path = Path(td) / "unsafe.svg"
+            svg_path.write_text(
+                '<?xml version="1.0"?><!DOCTYPE svg><svg xmlns="http://www.w3.org/2000/svg">'
+                '<text x="0" y="0">a</text></svg>',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "disallowed XML declarations"):
+                propose_mapping(str(svg_path))
+
+    def test_rejects_non_svg_root(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            svg_path = Path(td) / "notsvg.svg"
+            svg_path.write_text("<root><text>a</text></root>", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "not an SVG file"):
+                propose_mapping(str(svg_path))
+
+
 if __name__ == "__main__":
     unittest.main()

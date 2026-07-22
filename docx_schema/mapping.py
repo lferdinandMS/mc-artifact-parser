@@ -11,7 +11,7 @@ _MAX_DOCUMENT_XML_BYTES = 10 * 1024 * 1024
 
 
 def propose_mapping(path: str) -> list[ColumnSet]:
-    tables = _extract_docx_tables(path)
+    tables = _extract_tables(path)
     column_sets: list[ColumnSet] = []
     by_signature: dict[tuple[str, ...], ColumnSet] = {}
 
@@ -150,7 +150,7 @@ def write_schema_files(source_docx: str | Path, column_sets: list[ColumnSet], ou
     seen_paths: set[Path] = set()
     column_set_by_signature = {_signature_from_pairs(column_set.pairs): column_set for column_set in column_sets}
 
-    for table in _extract_docx_tables(str(source_docx)):
+    for table in _extract_tables(str(source_docx)):
         signature = _signature_from_headers(table.headers)
         column_set = column_set_by_signature.get(signature)
         if column_set is None:
@@ -170,6 +170,12 @@ def write_schema_files(source_docx: str | Path, column_sets: list[ColumnSet], ou
         written.append(path)
 
     return written
+
+
+def _extract_tables(path: str) -> list[SourceTable]:
+    if Path(path).suffix.lower() == ".svg":
+        return _extract_svg_tables(path)
+    return _extract_docx_tables(path)
 
 
 def _extract_docx_tables(path: str) -> list[SourceTable]:
@@ -354,3 +360,136 @@ def _schema_filename(value: str) -> str:
 
 def _local_name(tag: str) -> str:
     return tag.split("}", maxsplit=1)[-1]
+
+
+_SVG_HEADER_WORDS = {"column", "field", "name", "type", "data type", "datatype"}
+
+
+def _extract_svg_tables(path: str) -> list[SourceTable]:
+    data = Path(path).read_bytes()
+    if len(data) > _MAX_DOCUMENT_XML_BYTES:
+        raise ValueError("SVG file exceeds the maximum supported size.")
+
+    if re.search(br"<!\s*(doctype|entity)\b", data, flags=re.IGNORECASE):
+        raise ValueError("SVG contains disallowed XML declarations.")
+
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError as exc:
+        raise ValueError(f"{path} is not a valid SVG (XML parse failed): {exc}") from exc
+
+    if _local_name(root.tag).lower() != "svg":
+        raise ValueError(
+            f"{path} is not an SVG file (root element is <{_local_name(root.tag)}>)."
+        )
+
+    nodes = _collect_svg_text_nodes(root)
+    if not nodes:
+        raise ValueError(f"No text could be extracted from {path}.")
+
+    pairs = _drop_leading_header_pair(_pair_svg_texts(nodes))
+    if not pairs:
+        raise ValueError(f"No column/type pairs could be extracted from {path}.")
+
+    name = _infer_svg_entity_name(path)
+    rows = [[column, type_] for column, type_ in pairs]
+    return [SourceTable(name=name, headers=["Column", "Type"], rows=rows)]
+
+
+def _collect_svg_text_nodes(root: ET.Element) -> list[tuple[float, float, str]]:
+    nodes: list[tuple[float, float, str]] = []
+    for element in root.iter():
+        if _local_name(element.tag).lower() != "text":
+            continue
+
+        text = re.sub(r"\s+", " ", "".join(element.itertext()).strip())
+        if not text:
+            continue
+
+        x = _svg_coord(element, "x")
+        y = _svg_coord(element, "y")
+        if x is None or y is None:
+            for child in element.iter():
+                if _local_name(child.tag).lower() != "tspan":
+                    continue
+                if x is None:
+                    x = _svg_coord(child, "x")
+                if y is None:
+                    y = _svg_coord(child, "y")
+                break
+
+        nodes.append((x or 0.0, y or 0.0, text))
+
+    return nodes
+
+
+def _svg_coord(element: ET.Element, attribute: str) -> float | None:
+    raw = element.get(attribute)
+    if raw is None:
+        return None
+    match = re.match(r"-?\d+(?:\.\d+)?", raw.strip())
+    if match is None:
+        return None
+    return float(match.group())
+
+
+def _pair_svg_texts(nodes: list[tuple[float, float, str]]) -> list[tuple[str, str]]:
+    # 1) Inline "column: type" (or tab-separated) in a single text node.
+    inline: list[tuple[str, str]] | None = []
+    for _x, _y, text in nodes:
+        match = re.match(r"^(.+?)[\t:]\s*(.+)$", text)
+        if match is None:
+            inline = None
+            break
+        inline.append((match.group(1).strip(), match.group(2).strip()))
+    if inline:
+        return _dedupe_pairs(inline)
+
+    # 2) Two-column geometry: split on the horizontal midpoint, align by row (y).
+    xs = [x for x, _y, _text in nodes]
+    if xs and (max(xs) - min(xs)) > 1.0:
+        midpoint = (max(xs) + min(xs)) / 2.0
+        rows: dict[int, dict[str, list[tuple[float, str]]]] = {}
+        for x, y, text in nodes:
+            bucket = rows.setdefault(round(y), {"left": [], "right": []})
+            bucket["left" if x <= midpoint else "right"].append((x, text))
+
+        pairs: list[tuple[str, str]] = []
+        for key in sorted(rows):
+            left = sorted(rows[key]["left"])
+            right = sorted(rows[key]["right"])
+            if left and right:
+                pairs.append((left[0][1], right[-1][1]))
+        if pairs:
+            return _dedupe_pairs(pairs)
+
+    # 3) Fallback: pair consecutive text nodes in document order.
+    texts = [text for _x, _y, text in nodes]
+    fallback = [(texts[i], texts[i + 1]) for i in range(0, len(texts) - 1, 2)]
+    return _dedupe_pairs(fallback)
+
+
+def _dedupe_pairs(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    seen: set[str] = set()
+    deduped: list[tuple[str, str]] = []
+    for column, type_ in pairs:
+        key = _normalize_header(column)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append((column.strip(), type_.strip()))
+    return deduped
+
+
+def _drop_leading_header_pair(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    if pairs:
+        column, type_ = pairs[0]
+        if _normalize_header(column) in _SVG_HEADER_WORDS and _normalize_header(type_) in _SVG_HEADER_WORDS:
+            return pairs[1:]
+    return pairs
+
+
+def _infer_svg_entity_name(path: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9]+", " ", Path(path).stem).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned or "table_1"

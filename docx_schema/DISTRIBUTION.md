@@ -2,14 +2,18 @@
 
 Portable source bundle for a two-command workflow:
 
-1. `python -m docx_schema propose-mapping <docx> --out <mapping.md>`
-2. `python -m docx_schema create-schema <docx> <mapping.md> --out-dir <dir>`
+1. `python -m docx_schema propose-mapping <docx|svg> --out <mapping.md>`
+2. `python -m docx_schema create-schema <docx|svg> <mapping.md> --out-dir <dir>`
 
-The current implementation treats each distinct header signature as a separate column set, emits a crosswalk for it, and then uses the reviewed mapping plus the source DOCX to generate one schema markdown file per table.
+Both commands accept either a DOCX (Word) file or an SVG (Scalable Vector Graphics) file. The source type is detected from the file extension: `.svg` files are read as a single `Column`/`Type` table, and everything else is treated as a DOCX.
 
-Table names are taken from the heading-styled (or short, heading-like) paragraph immediately before each table; long prose paragraphs are ignored so they never become table names, and tables without a usable heading fall back to `table_N`. Generated schema filenames sanitize illegal characters and are capped in length so they stay valid on Windows.
+The current implementation treats each distinct header signature as a separate column set, emits a crosswalk for it, and then uses the reviewed mapping plus the source file to generate one schema markdown file per table.
 
-Invalid input is rejected with a clear message: a non-ZIP or non-DOCX file fails with an explicit "not a valid ZIP-based DOCX file" error rather than a low-level archive exception.
+Table names are taken from the heading-styled (or short, heading-like) paragraph immediately before each DOCX table; long prose paragraphs are ignored so they never become table names, and tables without a usable heading fall back to `table_N`. For SVG sources the entity name is derived from the file name. Generated schema filenames sanitize illegal characters and are capped in length so they stay valid on Windows.
+
+SVG extraction reads all `<text>`/`<tspan>` nodes and derives `(column, type)` pairs using layered heuristics: inline `column: type` text, otherwise a two-column geometry split (row-aligned by `y`, columns split on the horizontal midpoint), otherwise consecutive text nodes paired in document order. A leading `Column`/`Type` header pair is dropped, and SVG XML is guarded against oversized input and disallowed `<!DOCTYPE>`/`<!ENTITY>` declarations.
+
+Invalid input is rejected with a clear message: a non-ZIP or non-DOCX file fails with an explicit "not a valid ZIP-based DOCX file" error, and a non-SVG or malformed `.svg` fails with an explicit SVG parse/root error rather than a low-level exception.
 
 The workflow state also records ISO timestamps with microsecond precision so successive updates remain distinct in the generated session state.
 
@@ -18,6 +22,10 @@ The workflow state also records ISO timestamps with microsecond precision so suc
 ```bash
 python -m docx_schema propose-mapping ./sample.docx --out ./mapping.md
 python -m docx_schema create-schema ./sample.docx @./mapping.md --out-dir ./schema
+
+# SVG source (same two commands)
+python -m docx_schema propose-mapping ./sample.svg --out ./svg-mapping.md
+python -m docx_schema create-schema ./sample.svg @./svg-mapping.md --out-dir ./schema
 ```
 
 ## Output format
@@ -174,7 +182,7 @@ _MAX_DOCUMENT_XML_BYTES = 10 * 1024 * 1024
 
 
 def propose_mapping(path: str) -> list[ColumnSet]:
-    tables = _extract_docx_tables(path)
+    tables = _extract_tables(path)
     column_sets: list[ColumnSet] = []
     by_signature: dict[tuple[str, ...], ColumnSet] = {}
 
@@ -313,7 +321,7 @@ def write_schema_files(source_docx: str | Path, column_sets: list[ColumnSet], ou
     seen_paths: set[Path] = set()
     column_set_by_signature = {_signature_from_pairs(column_set.pairs): column_set for column_set in column_sets}
 
-    for table in _extract_docx_tables(str(source_docx)):
+    for table in _extract_tables(str(source_docx)):
         signature = _signature_from_headers(table.headers)
         column_set = column_set_by_signature.get(signature)
         if column_set is None:
@@ -333,6 +341,12 @@ def write_schema_files(source_docx: str | Path, column_sets: list[ColumnSet], ou
         written.append(path)
 
     return written
+
+
+def _extract_tables(path: str) -> list[SourceTable]:
+    if Path(path).suffix.lower() == ".svg":
+        return _extract_svg_tables(path)
+    return _extract_docx_tables(path)
 
 
 def _extract_docx_tables(path: str) -> list[SourceTable]:
@@ -517,6 +531,139 @@ def _schema_filename(value: str) -> str:
 
 def _local_name(tag: str) -> str:
     return tag.split("}", maxsplit=1)[-1]
+
+
+_SVG_HEADER_WORDS = {"column", "field", "name", "type", "data type", "datatype"}
+
+
+def _extract_svg_tables(path: str) -> list[SourceTable]:
+    data = Path(path).read_bytes()
+    if len(data) > _MAX_DOCUMENT_XML_BYTES:
+        raise ValueError("SVG file exceeds the maximum supported size.")
+
+    if re.search(br"<!\s*(doctype|entity)\b", data, flags=re.IGNORECASE):
+        raise ValueError("SVG contains disallowed XML declarations.")
+
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError as exc:
+        raise ValueError(f"{path} is not a valid SVG (XML parse failed): {exc}") from exc
+
+    if _local_name(root.tag).lower() != "svg":
+        raise ValueError(
+            f"{path} is not an SVG file (root element is <{_local_name(root.tag)}>)."
+        )
+
+    nodes = _collect_svg_text_nodes(root)
+    if not nodes:
+        raise ValueError(f"No text could be extracted from {path}.")
+
+    pairs = _drop_leading_header_pair(_pair_svg_texts(nodes))
+    if not pairs:
+        raise ValueError(f"No column/type pairs could be extracted from {path}.")
+
+    name = _infer_svg_entity_name(path)
+    rows = [[column, type_] for column, type_ in pairs]
+    return [SourceTable(name=name, headers=["Column", "Type"], rows=rows)]
+
+
+def _collect_svg_text_nodes(root: ET.Element) -> list[tuple[float, float, str]]:
+    nodes: list[tuple[float, float, str]] = []
+    for element in root.iter():
+        if _local_name(element.tag).lower() != "text":
+            continue
+
+        text = re.sub(r"\s+", " ", "".join(element.itertext()).strip())
+        if not text:
+            continue
+
+        x = _svg_coord(element, "x")
+        y = _svg_coord(element, "y")
+        if x is None or y is None:
+            for child in element.iter():
+                if _local_name(child.tag).lower() != "tspan":
+                    continue
+                if x is None:
+                    x = _svg_coord(child, "x")
+                if y is None:
+                    y = _svg_coord(child, "y")
+                break
+
+        nodes.append((x or 0.0, y or 0.0, text))
+
+    return nodes
+
+
+def _svg_coord(element: ET.Element, attribute: str) -> float | None:
+    raw = element.get(attribute)
+    if raw is None:
+        return None
+    match = re.match(r"-?\d+(?:\.\d+)?", raw.strip())
+    if match is None:
+        return None
+    return float(match.group())
+
+
+def _pair_svg_texts(nodes: list[tuple[float, float, str]]) -> list[tuple[str, str]]:
+    # 1) Inline "column: type" (or tab-separated) in a single text node.
+    inline: list[tuple[str, str]] | None = []
+    for _x, _y, text in nodes:
+        match = re.match(r"^(.+?)[\t:]\s*(.+)$", text)
+        if match is None:
+            inline = None
+            break
+        inline.append((match.group(1).strip(), match.group(2).strip()))
+    if inline:
+        return _dedupe_pairs(inline)
+
+    # 2) Two-column geometry: split on the horizontal midpoint, align by row (y).
+    xs = [x for x, _y, _text in nodes]
+    if xs and (max(xs) - min(xs)) > 1.0:
+        midpoint = (max(xs) + min(xs)) / 2.0
+        rows: dict[int, dict[str, list[tuple[float, str]]]] = {}
+        for x, y, text in nodes:
+            bucket = rows.setdefault(round(y), {"left": [], "right": []})
+            bucket["left" if x <= midpoint else "right"].append((x, text))
+
+        pairs: list[tuple[str, str]] = []
+        for key in sorted(rows):
+            left = sorted(rows[key]["left"])
+            right = sorted(rows[key]["right"])
+            if left and right:
+                pairs.append((left[0][1], right[-1][1]))
+        if pairs:
+            return _dedupe_pairs(pairs)
+
+    # 3) Fallback: pair consecutive text nodes in document order.
+    texts = [text for _x, _y, text in nodes]
+    fallback = [(texts[i], texts[i + 1]) for i in range(0, len(texts) - 1, 2)]
+    return _dedupe_pairs(fallback)
+
+
+def _dedupe_pairs(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    seen: set[str] = set()
+    deduped: list[tuple[str, str]] = []
+    for column, type_ in pairs:
+        key = _normalize_header(column)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append((column.strip(), type_.strip()))
+    return deduped
+
+
+def _drop_leading_header_pair(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    if pairs:
+        column, type_ = pairs[0]
+        if _normalize_header(column) in _SVG_HEADER_WORDS and _normalize_header(type_) in _SVG_HEADER_WORDS:
+            return pairs[1:]
+    return pairs
+
+
+def _infer_svg_entity_name(path: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9]+", " ", Path(path).stem).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned or "table_1"
 ```
 
 ### `cli.py`
@@ -533,16 +680,16 @@ from docx_schema.mapping import parse_mapping_markdown, propose_mapping, render_
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m docx_schema", description="Create mapping and schema markdown files from DOCX tables.")
+    parser = argparse.ArgumentParser(prog="python -m docx_schema", description="Create mapping and schema markdown files from DOCX or SVG sources.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    propose = subparsers.add_parser("propose-mapping", help="Create a self-contained mapping markdown from a DOCX file.")
-    propose.add_argument("source", help="Path to source .docx")
+    propose = subparsers.add_parser("propose-mapping", help="Create a self-contained mapping markdown from a DOCX or SVG file.")
+    propose.add_argument("source", help="Path to source .docx or .svg")
     propose.add_argument("--out", default="./mapping.md", help="Output mapping markdown path")
     propose.set_defaults(handler=_run_propose_mapping)
 
-    create = subparsers.add_parser("create-schema", help="Create per-table schema files from source DOCX plus reviewed mapping markdown.")
-    create.add_argument("source", help="Path to source .docx (leading @ allowed)")
+    create = subparsers.add_parser("create-schema", help="Create per-table schema files from a source DOCX/SVG plus reviewed mapping markdown.")
+    create.add_argument("source", help="Path to source .docx or .svg (leading @ allowed)")
     create.add_argument("mapping", help="Path to mapping markdown (leading @ allowed)")
     create.add_argument("--out-dir", default="./schema", help="Output directory for schema markdown files")
     create.set_defaults(handler=_run_create_schema)
