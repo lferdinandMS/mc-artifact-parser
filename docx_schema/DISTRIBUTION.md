@@ -4,14 +4,17 @@ Portable source bundle for a two-command workflow:
 
 1. `python -m docx_schema propose-mapping <docx|svg> --out <mapping.md>`
 2. `python -m docx_schema create-schema <docx|svg> <mapping.md> --out-dir <dir>`
+3. `python -m docx_schema extract-relationships <svg> --out <relationships.md>` (SVG only)
 
-Both commands accept either a DOCX (Word) file or an SVG (Scalable Vector Graphics) file. The source type is detected from the file extension: `.svg` files are read as a single `Column`/`Type` table, and everything else is treated as a DOCX.
+Both commands accept either a DOCX (Word) file or an SVG (Scalable Vector Graphics) diagram (`.svg` or `.xml`). Extraction is handled by a small per-source subpackage (`docx_schema/sources/`): a registry tries each `SourceReader` in turn and falls back to the DOCX reader for unrecognized files. `SvgReader` claims `.svg`/`.xml`; everything else is read as DOCX.
 
 The current implementation treats each distinct header signature as a separate column set, emits a crosswalk for it, and then uses the reviewed mapping plus the source file to generate one schema markdown file per table.
 
-Table names are taken from the heading-styled (or short, heading-like) paragraph immediately before each DOCX table; long prose paragraphs are ignored so they never become table names, and tables without a usable heading fall back to `table_N`. For SVG sources the entity name is derived from the file name. Generated schema filenames sanitize illegal characters and are capped in length so they stay valid on Windows.
+Table names are taken from the heading-styled (or short, heading-like) paragraph immediately before each DOCX table; long prose paragraphs are ignored so they never become table names, and tables without a usable heading fall back to `table_N`. For SVG sources the entity name comes from the per-table `class="thText"` label. Generated schema filenames sanitize illegal characters and are capped in length so they stay valid on Windows.
 
-SVG extraction reads all `<text>`/`<tspan>` nodes and derives `(column, type)` pairs using layered heuristics: inline `column: type` text, otherwise a two-column geometry split (row-aligned by `y`, columns split on the horizontal midpoint), otherwise consecutive text nodes paired in document order. A leading `Column`/`Type` header pair is dropped, and SVG XML is guarded against oversized input and disallowed `<!DOCTYPE>`/`<!ENTITY>` declarations.
+SVG extraction is class- and layout-driven: each table is a `<g>` group containing one `class="thText"` name node, `class="headText"` header nodes (ordered by `x`), and `class="cell"` data nodes (grouped into rows by `y`, ordered within a row by `x`). A group with more than one name node is treated as a wrapper and skipped so its inner per-table groups produce the tables; files without any grouped tables fall back to a single whole-document table. SVG input is guarded against oversized files and disallowed `<!DOCTYPE>`/`<!ENTITY>` declarations.
+
+SVG diagrams can also encode directional table relationships as arrows. `extract-relationships` reads the table bounding boxes (`<rect class="tbl">`, falling back to cell extents) and the connector geometry: `class="link"` `<path>`/`<line>` segments carry the arrowhead (its last point marks the target), while `class="stub"` segments route the connector between table edges. Segments are grouped by point-on-segment adjacency (union-find), so a single source that fans out to several targets yields one relationship per target. Each endpoint touching a table's left/right edge is resolved to `(table, column)` by nearest row `y`; the non-arrowhead edge endpoint is the source and each arrowhead endpoint is a target. Output is a markdown table plus a Mermaid `erDiagram`.
 
 Invalid input is rejected with a clear message: a non-ZIP or non-DOCX file fails with an explicit "not a valid ZIP-based DOCX file" error, and a non-SVG or malformed `.svg` fails with an explicit SVG parse/root error rather than a low-level exception.
 
@@ -23,9 +26,12 @@ The workflow state also records ISO timestamps with microsecond precision so suc
 python -m docx_schema propose-mapping ./sample.docx --out ./mapping.md
 python -m docx_schema create-schema ./sample.docx @./mapping.md --out-dir ./schema
 
-# SVG source (same two commands)
+# SVG source (same two commands; .svg or .xml)
 python -m docx_schema propose-mapping ./sample.svg --out ./svg-mapping.md
 python -m docx_schema create-schema ./sample.svg @./svg-mapping.md --out-dir ./schema
+
+# Extract table relationships (arrows) from an SVG diagram
+python -m docx_schema extract-relationships ./sample.svg --out ./relationships.md
 ```
 
 ## Output format
@@ -164,6 +170,14 @@ class TableSchema:
 class ColumnSet:
     table_names: list[str] = field(default_factory=list)
     pairs: list[tuple[str, str]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class Relationship:
+    source_table: str
+    source_column: str
+    target_table: str
+    target_column: str
 ```
 
 ### `mapping.py`
@@ -172,17 +186,14 @@ class ColumnSet:
 from __future__ import annotations
 
 import re
-import zipfile
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
-from docx_schema.models import ColumnSet, SourceTable, TableSchema, TARGET_COLUMNS
-
-_MAX_DOCUMENT_XML_BYTES = 10 * 1024 * 1024
+from docx_schema.models import ColumnSet, Relationship, SourceTable, TableSchema, TARGET_COLUMNS
+from docx_schema.sources import read_tables
 
 
 def propose_mapping(path: str) -> list[ColumnSet]:
-    tables = _extract_tables(path)
+    tables = read_tables(path)
     column_sets: list[ColumnSet] = []
     by_signature: dict[tuple[str, ...], ColumnSet] = {}
 
@@ -312,6 +323,36 @@ def render_schema_markdown(table: TableSchema) -> str:
     return "\n".join(lines)
 
 
+def render_relationships_markdown(relationships: list[Relationship]) -> str:
+    lines = ["# Relationships", ""]
+
+    if not relationships:
+        lines.append("_No relationships found._")
+        return "\n".join(lines) + "\n"
+
+    lines.append("| Source Table | Source Column | Target Table | Target Column |")
+    lines.append("|---|---|---|---|")
+    for relationship in relationships:
+        lines.append(
+            f"| {relationship.source_table} | {relationship.source_column or '*'} "
+            f"| {relationship.target_table} | {relationship.target_column or '*'} |"
+        )
+
+    lines.append("")
+    lines.append("## Mermaid ERD")
+    lines.append("")
+    lines.append("```mermaid")
+    lines.append("erDiagram")
+    for relationship in relationships:
+        label = f"{relationship.source_column or '*'} -> {relationship.target_column or '*'}"
+        lines.append(
+            f'    {relationship.source_table} ||--o{{ {relationship.target_table} : "{label}"'
+        )
+    lines.append("```")
+
+    return "\n".join(lines) + "\n"
+
+
 def write_schema_files(source_docx: str | Path, column_sets: list[ColumnSet], out_dir: str | Path) -> list[Path]:
     output_dir = Path(out_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -321,7 +362,7 @@ def write_schema_files(source_docx: str | Path, column_sets: list[ColumnSet], ou
     seen_paths: set[Path] = set()
     column_set_by_signature = {_signature_from_pairs(column_set.pairs): column_set for column_set in column_sets}
 
-    for table in _extract_tables(str(source_docx)):
+    for table in read_tables(str(source_docx)):
         signature = _signature_from_headers(table.headers)
         column_set = column_set_by_signature.get(signature)
         if column_set is None:
@@ -341,75 +382,6 @@ def write_schema_files(source_docx: str | Path, column_sets: list[ColumnSet], ou
         written.append(path)
 
     return written
-
-
-def _extract_tables(path: str) -> list[SourceTable]:
-    if Path(path).suffix.lower() == ".svg":
-        return _extract_svg_tables(path)
-    return _extract_docx_tables(path)
-
-
-def _extract_docx_tables(path: str) -> list[SourceTable]:
-    try:
-        with zipfile.ZipFile(path) as archive:
-            try:
-                document_xml = archive.getinfo("word/document.xml")
-            except KeyError as exc:
-                raise ValueError(f"{path} is missing word/document.xml") from exc
-
-            if document_xml.file_size > _MAX_DOCUMENT_XML_BYTES:
-                raise ValueError("DOCX word/document.xml exceeds the maximum supported size.")
-
-            xml = archive.read(document_xml)
-    except zipfile.BadZipFile as exc:
-        raise ValueError(
-            f"{path} is not a valid ZIP-based DOCX file. "
-            "Please provide a real .docx generated by Microsoft Word or save the document as .docx before retrying."
-        ) from exc
-
-    if re.search(br"<!\s*(doctype|entity)\b", xml, flags=re.IGNORECASE):
-        raise ValueError("DOCX word/document.xml contains disallowed XML declarations.")
-
-    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-    root = ET.fromstring(xml)
-    body = root.find(".//w:body", ns)
-    if body is None:
-        return []
-
-    tables: list[SourceTable] = []
-    pending_name: str | None = None
-
-    for child in body:
-        tag = _local_name(child.tag)
-
-        if tag == "p":
-            text = "".join(node.text for node in child.findall(".//w:t", ns) if node.text).strip()
-            if text and _looks_like_table_name(child, text, ns):
-                pending_name = text
-            continue
-
-        if tag != "tbl":
-            continue
-
-        rows: list[list[str]] = []
-        for row in child.findall("./w:tr", ns):
-            cells: list[str] = []
-            for cell in row.findall("./w:tc", ns):
-                text = "".join(node.text for node in cell.findall(".//w:t", ns) if node.text).strip()
-                cells.append(text)
-            if any(cells):
-                rows.append(cells)
-
-        if not rows:
-            continue
-
-        name = pending_name or f"table_{len(tables) + 1}"
-        headers = rows[0]
-        table_rows = rows[1:]
-        tables.append(SourceTable(name=name, headers=headers, rows=table_rows))
-        pending_name = None
-
-    return tables
 
 
 def _render_wide_table_lines(rows: list[list[str]]) -> list[str]:
@@ -527,74 +499,328 @@ def _schema_filename(value: str) -> str:
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     cleaned = cleaned[:80].strip()
     return f"{cleaned or 'table'}_schema.md"
+```
+
+### `sources/__init__.py`
+
+```python
+from __future__ import annotations
+
+from docx_schema.models import Relationship, SourceTable
+from docx_schema.sources.base import SourceReader
+from docx_schema.sources.docx import DocxReader
+from docx_schema.sources.svg import SvgReader, extract_relationships
+
+# Registry of source readers, tried in order. DocxReader is the default
+# fallback so unrecognized files still get the clear DOCX error message.
+_READERS: list[SourceReader] = [SvgReader()]
+
+_DEFAULT_READER: SourceReader = DocxReader()
+
+_SVG_READER = SvgReader()
 
 
-def _local_name(tag: str) -> str:
+def read_tables(path: str) -> list[SourceTable]:
+    for reader in _READERS:
+        if reader.can_read(path):
+            return reader.read(path)
+    return _DEFAULT_READER.read(path)
+
+
+def read_relationships(path: str) -> list[Relationship]:
+    """Extract table relationships from sources that encode them (SVG only)."""
+    if _SVG_READER.can_read(path):
+        return extract_relationships(path)
+    return []
+
+
+__all__ = ["read_tables", "read_relationships", "SourceReader"]
+```
+
+### `sources/base.py`
+
+```python
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Protocol, runtime_checkable
+
+from docx_schema.models import SourceTable
+
+MAX_SOURCE_BYTES = 10 * 1024 * 1024
+
+
+@runtime_checkable
+class SourceReader(Protocol):
+    """A component that turns one source file into extracted tables."""
+
+    def can_read(self, path: str) -> bool:
+        ...
+
+    def read(self, path: str) -> list[SourceTable]:
+        ...
+
+
+def local_name(tag: str) -> str:
     return tag.split("}", maxsplit=1)[-1]
 
 
-_SVG_HEADER_WORDS = {"column", "field", "name", "type", "data type", "datatype"}
+def reject_xml_declarations(data: bytes) -> None:
+    if re.search(br"<!\s*(doctype|entity)\b", data, flags=re.IGNORECASE):
+        raise ValueError("Source contains disallowed XML declarations.")
 
 
-def _extract_svg_tables(path: str) -> list[SourceTable]:
+def entity_name_from_path(path: str, fallback: str = "table_1") -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9]+", " ", Path(path).stem).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned or fallback
+```
+
+### `sources/docx.py`
+
+```python
+from __future__ import annotations
+
+import re
+import zipfile
+from xml.etree import ElementTree as ET
+
+from docx_schema.models import SourceTable
+from docx_schema.sources.base import MAX_SOURCE_BYTES, local_name
+
+
+class DocxReader:
+    """Reads tables from the Office Open XML body of a .docx file."""
+
+    def can_read(self, path: str) -> bool:
+        return path.lower().endswith(".docx")
+
+    def read(self, path: str) -> list[SourceTable]:
+        return _extract_docx_tables(path)
+
+
+def _extract_docx_tables(path: str) -> list[SourceTable]:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            try:
+                document_xml = archive.getinfo("word/document.xml")
+            except KeyError as exc:
+                raise ValueError(f"{path} is missing word/document.xml") from exc
+
+            if document_xml.file_size > MAX_SOURCE_BYTES:
+                raise ValueError("DOCX word/document.xml exceeds the maximum supported size.")
+
+            xml = archive.read(document_xml)
+    except zipfile.BadZipFile as exc:
+        raise ValueError(
+            f"{path} is not a valid ZIP-based DOCX file. "
+            "Please provide a real .docx generated by Microsoft Word or save the document as .docx before retrying."
+        ) from exc
+
+    if re.search(br"<!\s*(doctype|entity)\b", xml, flags=re.IGNORECASE):
+        raise ValueError("DOCX word/document.xml contains disallowed XML declarations.")
+
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    root = ET.fromstring(xml)
+    body = root.find(".//w:body", ns)
+    if body is None:
+        return []
+
+    tables: list[SourceTable] = []
+    pending_name: str | None = None
+
+    for child in body:
+        tag = local_name(child.tag)
+
+        if tag == "p":
+            text = "".join(node.text for node in child.findall(".//w:t", ns) if node.text).strip()
+            if text and _looks_like_table_name(child, text, ns):
+                pending_name = text
+            continue
+
+        if tag != "tbl":
+            continue
+
+        rows: list[list[str]] = []
+        for row in child.findall("./w:tr", ns):
+            cells: list[str] = []
+            for cell in row.findall("./w:tc", ns):
+                text = "".join(node.text for node in cell.findall(".//w:t", ns) if node.text).strip()
+                cells.append(text)
+            if any(cells):
+                rows.append(cells)
+
+        if not rows:
+            continue
+
+        name = pending_name or f"table_{len(tables) + 1}"
+        headers = rows[0]
+        table_rows = rows[1:]
+        tables.append(SourceTable(name=name, headers=headers, rows=table_rows))
+        pending_name = None
+
+    return tables
+
+
+def _looks_like_table_name(paragraph: ET.Element, text: str, ns: dict[str, str]) -> bool:
+    style_el = paragraph.find("w:pPr/w:pStyle", ns)
+    style = (style_el.get(f"{{{ns['w']}}}val", "") if style_el is not None else "") or ""
+    if any(marker in style.lower() for marker in ("heading", "title", "caption")):
+        return True
+    # Fall back for unstyled captions: accept only short, heading-like lines and
+    # reject prose sentences or "Label: value" lines (e.g. "Used by: ...",
+    # "Routes to: Outflow Worker as a hard constraint.") so descriptive body text
+    # is never mistaken for a table name.
+    if len(text) > 48 or len(text.split()) > 6:
+        return False
+    if text[-1] in ".!?:;,":
+        return False
+    if ": " in text:
+        return False
+    return True
+```
+
+### `sources/svg.py`
+
+```python
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from xml.etree import ElementTree as ET
+
+from docx_schema.models import Relationship, SourceTable
+from docx_schema.sources.base import (
+    MAX_SOURCE_BYTES,
+    entity_name_from_path,
+    local_name,
+    reject_xml_declarations,
+)
+
+_NAME_CLASSES = {"thtext"}
+_HEADER_CLASSES = {"headtext"}
+_CELL_CLASSES = {"cell"}
+
+# Geometry tolerances (SVG user units).
+_EDGE_TOL = 6.0
+_ROW_TOL = 14.0
+_TOUCH_TOL = 2.5
+
+
+class SvgReader:
+    """Reads schema tables from a structured SVG diagram.
+
+    Each table is expected to be a ``<g>`` group containing:
+      * one ``class="thText"`` text node giving the table name,
+      * ``class="headText"`` text nodes for the column headers, and
+      * ``class="cell"`` text nodes for the data, laid out in columns by
+        ``x`` and in rows by ``y``.
+    Files without grouped tables fall back to a single whole-document table.
+    """
+
+    def can_read(self, path: str) -> bool:
+        return path.lower().endswith((".svg", ".xml"))
+
+    def read(self, path: str) -> list[SourceTable]:
+        return _extract_svg_tables(path)
+
+
+def _load_svg_root(path: str) -> ET.Element:
     data = Path(path).read_bytes()
-    if len(data) > _MAX_DOCUMENT_XML_BYTES:
+    if len(data) > MAX_SOURCE_BYTES:
         raise ValueError("SVG file exceeds the maximum supported size.")
 
-    if re.search(br"<!\s*(doctype|entity)\b", data, flags=re.IGNORECASE):
-        raise ValueError("SVG contains disallowed XML declarations.")
+    reject_xml_declarations(data)
 
     try:
         root = ET.fromstring(data)
     except ET.ParseError as exc:
         raise ValueError(f"{path} is not a valid SVG (XML parse failed): {exc}") from exc
 
-    if _local_name(root.tag).lower() != "svg":
+    if local_name(root.tag).lower() != "svg":
         raise ValueError(
-            f"{path} is not an SVG file (root element is <{_local_name(root.tag)}>)."
+            f"{path} is not an SVG file (root element is <{local_name(root.tag)}>)."
         )
 
-    nodes = _collect_svg_text_nodes(root)
-    if not nodes:
-        raise ValueError(f"No text could be extracted from {path}.")
-
-    pairs = _drop_leading_header_pair(_pair_svg_texts(nodes))
-    if not pairs:
-        raise ValueError(f"No column/type pairs could be extracted from {path}.")
-
-    name = _infer_svg_entity_name(path)
-    rows = [[column, type_] for column, type_ in pairs]
-    return [SourceTable(name=name, headers=["Column", "Type"], rows=rows)]
+    return root
 
 
-def _collect_svg_text_nodes(root: ET.Element) -> list[tuple[float, float, str]]:
-    nodes: list[tuple[float, float, str]] = []
-    for element in root.iter():
-        if _local_name(element.tag).lower() != "text":
+def _extract_svg_tables(path: str) -> list[SourceTable]:
+    root = _load_svg_root(path)
+
+    tables: list[SourceTable] = []
+    for group in root.iter():
+        if local_name(group.tag).lower() != "g":
+            continue
+        table = _table_from_scope(group)
+        if table is not None:
+            tables.append(table)
+
+    if not tables:
+        fallback = _table_from_scope(root, default_name=entity_name_from_path(path))
+        if fallback is not None:
+            tables.append(fallback)
+
+    if not tables:
+        raise ValueError(f"No schema tables could be extracted from {path}.")
+
+    return tables
+
+
+def _table_from_scope(scope: ET.Element, default_name: str | None = None) -> SourceTable | None:
+    names: list[str] = []
+    header_nodes: list[tuple[float, str]] = []
+    cell_nodes: list[tuple[float, float, str]] = []
+
+    for element in scope.iter():
+        if local_name(element.tag).lower() != "text":
             continue
 
-        text = re.sub(r"\s+", " ", "".join(element.itertext()).strip())
+        text = _text_of(element)
         if not text:
             continue
 
-        x = _svg_coord(element, "x")
-        y = _svg_coord(element, "y")
-        if x is None or y is None:
-            for child in element.iter():
-                if _local_name(child.tag).lower() != "tspan":
-                    continue
-                if x is None:
-                    x = _svg_coord(child, "x")
-                if y is None:
-                    y = _svg_coord(child, "y")
-                break
+        classes = {token.lower() for token in (element.get("class") or "").split()}
+        x = _coord(element, "x") or 0.0
+        y = _coord(element, "y") or 0.0
 
-        nodes.append((x or 0.0, y or 0.0, text))
+        if classes & _NAME_CLASSES:
+            names.append(text)
+        elif classes & _HEADER_CLASSES:
+            header_nodes.append((x, text))
+        elif classes & _CELL_CLASSES:
+            cell_nodes.append((x, y, text))
 
-    return nodes
+    # A container that wraps several tables has more than one name node; skip it
+    # so the individual per-table groups are the ones that produce tables.
+    if default_name is None and len(names) != 1:
+        return None
+
+    if not cell_nodes:
+        return None
+
+    headers = [text for _x, text in sorted(header_nodes)]
+
+    rows_by_y: dict[int, list[tuple[float, str]]] = {}
+    for x, y, text in cell_nodes:
+        rows_by_y.setdefault(round(y), []).append((x, text))
+
+    rows = [[text for _x, text in sorted(rows_by_y[key])] for key in sorted(rows_by_y)]
+
+    if not headers:
+        width = max(len(row) for row in rows)
+        headers = [f"col{index + 1}" for index in range(width)]
+
+    name = names[0] if names else (default_name or "table_1")
+    return SourceTable(name=name, headers=headers, rows=rows)
 
 
-def _svg_coord(element: ET.Element, attribute: str) -> float | None:
+def _text_of(element: ET.Element) -> str:
+    return re.sub(r"\s+", " ", "".join(element.itertext()).strip())
+
+
+def _coord(element: ET.Element, attribute: str) -> float | None:
     raw = element.get(attribute)
     if raw is None:
         return None
@@ -604,66 +830,272 @@ def _svg_coord(element: ET.Element, attribute: str) -> float | None:
     return float(match.group())
 
 
-def _pair_svg_texts(nodes: list[tuple[float, float, str]]) -> list[tuple[str, str]]:
-    # 1) Inline "column: type" (or tab-separated) in a single text node.
-    inline: list[tuple[str, str]] | None = []
-    for _x, _y, text in nodes:
-        match = re.match(r"^(.+?)[\t:]\s*(.+)$", text)
-        if match is None:
-            inline = None
-            break
-        inline.append((match.group(1).strip(), match.group(2).strip()))
-    if inline:
-        return _dedupe_pairs(inline)
-
-    # 2) Two-column geometry: split on the horizontal midpoint, align by row (y).
-    xs = [x for x, _y, _text in nodes]
-    if xs and (max(xs) - min(xs)) > 1.0:
-        midpoint = (max(xs) + min(xs)) / 2.0
-        rows: dict[int, dict[str, list[tuple[float, str]]]] = {}
-        for x, y, text in nodes:
-            bucket = rows.setdefault(round(y), {"left": [], "right": []})
-            bucket["left" if x <= midpoint else "right"].append((x, text))
-
-        pairs: list[tuple[str, str]] = []
-        for key in sorted(rows):
-            left = sorted(rows[key]["left"])
-            right = sorted(rows[key]["right"])
-            if left and right:
-                pairs.append((left[0][1], right[-1][1]))
-        if pairs:
-            return _dedupe_pairs(pairs)
-
-    # 3) Fallback: pair consecutive text nodes in document order.
-    texts = [text for _x, _y, text in nodes]
-    fallback = [(texts[i], texts[i + 1]) for i in range(0, len(texts) - 1, 2)]
-    return _dedupe_pairs(fallback)
+# ---------------------------------------------------------------------------
+# Relationship extraction
+# ---------------------------------------------------------------------------
 
 
-def _dedupe_pairs(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    seen: set[str] = set()
-    deduped: list[tuple[str, str]] = []
-    for column, type_ in pairs:
-        key = _normalize_header(column)
-        if not key or key in seen:
+class _TableBox:
+    __slots__ = ("name", "left", "right", "top", "bottom", "rows")
+
+    def __init__(
+        self,
+        name: str,
+        left: float,
+        right: float,
+        top: float,
+        bottom: float,
+        rows: list[tuple[float, str]],
+    ) -> None:
+        self.name = name
+        self.left = left
+        self.right = right
+        self.top = top
+        self.bottom = bottom
+        self.rows = rows
+
+    def attaches(self, x: float, y: float) -> bool:
+        near_edge = abs(x - self.left) <= _EDGE_TOL or abs(x - self.right) <= _EDGE_TOL
+        within_span = self.top - _EDGE_TOL <= y <= self.bottom + _EDGE_TOL
+        return near_edge and within_span
+
+    def column_at(self, y: float) -> str:
+        best: str = ""
+        best_dist = _ROW_TOL
+        for row_y, column in self.rows:
+            dist = abs(row_y - y)
+            if dist <= best_dist:
+                best_dist = dist
+                best = column
+        return best
+
+
+def extract_relationships(path: str) -> list[Relationship]:
+    """Extract directional table relationships encoded by SVG arrows.
+
+    Arrows are ``class="link"`` paths whose ``marker-end`` places the arrowhead
+    at the target; ``class="stub"`` segments route the connector between table
+    edges. Endpoints touching a table edge are resolved to ``(table, column)``
+    by nearest row; connected segments are grouped so a source that fans out to
+    several targets yields one relationship per target.
+    """
+
+    root = _load_svg_root(path)
+    boxes = _table_boxes(root)
+    if not boxes:
+        return []
+
+    segments, arrowheads = _connector_segments(root)
+    if not segments:
+        return []
+
+    parent = list(range(len(segments)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        parent[find(i)] = find(j)
+
+    for i in range(len(segments)):
+        for j in range(i + 1, len(segments)):
+            if _segments_touch(segments[i], segments[j]):
+                union(i, j)
+
+    components: dict[int, list[tuple[tuple[float, float], tuple[float, float]]]] = {}
+    for index, segment in enumerate(segments):
+        components.setdefault(find(index), []).append(segment)
+
+    relationships: list[Relationship] = []
+    seen: set[Relationship] = set()
+
+    for segs in components.values():
+        sources: set[tuple[str, str]] = set()
+        targets: set[tuple[str, str]] = set()
+
+        endpoints = {point for segment in segs for point in segment}
+        for point in endpoints:
+            attachment = _attachment(point, boxes)
+            if attachment is None:
+                continue
+            if _rounded(point) in arrowheads:
+                targets.add(attachment)
+            else:
+                sources.add(attachment)
+
+        for source in sources:
+            for target in targets:
+                if source == target:
+                    continue
+                relationship = Relationship(
+                    source_table=source[0],
+                    source_column=source[1],
+                    target_table=target[0],
+                    target_column=target[1],
+                )
+                if relationship not in seen:
+                    seen.add(relationship)
+                    relationships.append(relationship)
+
+    return relationships
+
+
+def _table_boxes(root: ET.Element) -> list[_TableBox]:
+    boxes: list[_TableBox] = []
+    for group in root.iter():
+        if local_name(group.tag).lower() != "g":
             continue
-        seen.add(key)
-        deduped.append((column.strip(), type_.strip()))
-    return deduped
+
+        names: list[str] = []
+        cell_nodes: list[tuple[float, float, str]] = []
+        table_rect: tuple[float, float, float, float] | None = None
+
+        for element in group.iter():
+            tag = local_name(element.tag).lower()
+            classes = {token.lower() for token in (element.get("class") or "").split()}
+
+            if tag == "rect" and "tbl" in classes and table_rect is None:
+                x = _coord(element, "x")
+                y = _coord(element, "y")
+                width = _coord(element, "width")
+                height = _coord(element, "height")
+                if None not in (x, y, width, height):
+                    table_rect = (x, y, width, height)  # type: ignore[assignment]
+                continue
+
+            if tag != "text":
+                continue
+
+            text = _text_of(element)
+            if not text:
+                continue
+
+            x = _coord(element, "x") or 0.0
+            y = _coord(element, "y") or 0.0
+
+            if classes & _NAME_CLASSES:
+                names.append(text)
+            elif classes & _CELL_CLASSES:
+                cell_nodes.append((x, y, text))
+
+        if len(names) != 1 or not cell_nodes:
+            continue
+
+        rows = _column_rows(cell_nodes)
+
+        if table_rect is not None:
+            x, y, width, height = table_rect
+            left, right, top, bottom = x, x + width, y, y + height
+        else:
+            xs = [x for x, _y, _t in cell_nodes]
+            ys = [y for _x, y, _t in cell_nodes]
+            left, right, top, bottom = min(xs), max(xs), min(ys), max(ys)
+
+        boxes.append(_TableBox(names[0], left, right, top, bottom, rows))
+
+    return boxes
 
 
-def _drop_leading_header_pair(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    if pairs:
-        column, type_ = pairs[0]
-        if _normalize_header(column) in _SVG_HEADER_WORDS and _normalize_header(type_) in _SVG_HEADER_WORDS:
-            return pairs[1:]
-    return pairs
+def _column_rows(cell_nodes: list[tuple[float, float, str]]) -> list[tuple[float, str]]:
+    rows_by_y: dict[int, list[tuple[float, str]]] = {}
+    for x, y, text in cell_nodes:
+        rows_by_y.setdefault(round(y), []).append((x, text))
+
+    rows: list[tuple[float, str]] = []
+    for key in sorted(rows_by_y):
+        cells = sorted(rows_by_y[key])
+        rows.append((float(key), cells[0][1]))
+    return rows
 
 
-def _infer_svg_entity_name(path: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9]+", " ", Path(path).stem).strip()
-    cleaned = re.sub(r"\s+", " ", cleaned)
-    return cleaned or "table_1"
+def _connector_segments(
+    root: ET.Element,
+) -> tuple[list[tuple[tuple[float, float], tuple[float, float]]], set[tuple[int, int]]]:
+    segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    arrowheads: set[tuple[int, int]] = set()
+
+    for element in root.iter():
+        tag = local_name(element.tag).lower()
+        classes = {token.lower() for token in (element.get("class") or "").split()}
+        is_link = "link" in classes
+        is_stub = "stub" in classes
+        if not (is_link or is_stub):
+            continue
+
+        points = _element_points(element, tag)
+        if len(points) < 2:
+            continue
+
+        for start, end in zip(points, points[1:]):
+            segments.append((start, end))
+
+        if is_link:
+            arrowheads.add(_rounded(points[-1]))
+
+    return segments, arrowheads
+
+
+def _element_points(element: ET.Element, tag: str) -> list[tuple[float, float]]:
+    if tag == "line":
+        x1 = _coord(element, "x1")
+        y1 = _coord(element, "y1")
+        x2 = _coord(element, "x2")
+        y2 = _coord(element, "y2")
+        if None in (x1, y1, x2, y2):
+            return []
+        return [(x1, y1), (x2, y2)]  # type: ignore[list-item]
+
+    if tag == "path":
+        numbers = [float(value) for value in re.findall(r"-?\d+(?:\.\d+)?", element.get("d") or "")]
+        return [(numbers[i], numbers[i + 1]) for i in range(0, len(numbers) - 1, 2)]
+
+    return []
+
+
+def _segments_touch(
+    a: tuple[tuple[float, float], tuple[float, float]],
+    b: tuple[tuple[float, float], tuple[float, float]],
+) -> bool:
+    return (
+        _point_on_segment(a[0], b)
+        or _point_on_segment(a[1], b)
+        or _point_on_segment(b[0], a)
+        or _point_on_segment(b[1], a)
+    )
+
+
+def _point_on_segment(
+    point: tuple[float, float],
+    segment: tuple[tuple[float, float], tuple[float, float]],
+) -> bool:
+    (x1, y1), (x2, y2) = segment
+    px, py = point
+
+    if abs(x1 - x2) <= _TOUCH_TOL:  # vertical
+        return abs(px - x1) <= _TOUCH_TOL and min(y1, y2) - _TOUCH_TOL <= py <= max(y1, y2) + _TOUCH_TOL
+
+    if abs(y1 - y2) <= _TOUCH_TOL:  # horizontal
+        return abs(py - y1) <= _TOUCH_TOL and min(x1, x2) - _TOUCH_TOL <= px <= max(x1, x2) + _TOUCH_TOL
+
+    # Diagonal segment: only treat as touching at its endpoints.
+    return (abs(px - x1) <= _TOUCH_TOL and abs(py - y1) <= _TOUCH_TOL) or (
+        abs(px - x2) <= _TOUCH_TOL and abs(py - y2) <= _TOUCH_TOL
+    )
+
+
+def _attachment(point: tuple[float, float], boxes: list[_TableBox]) -> tuple[str, str] | None:
+    px, py = point
+    for box in boxes:
+        if box.attaches(px, py):
+            return (box.name, box.column_at(py))
+    return None
+
+
+def _rounded(point: tuple[float, float]) -> tuple[int, int]:
+    return (round(point[0]), round(point[1]))
 ```
 
 ### `cli.py`
@@ -676,7 +1108,14 @@ import sys
 from pathlib import Path
 
 from docx_schema.docx_reader import normalize_docx_path
-from docx_schema.mapping import parse_mapping_markdown, propose_mapping, render_mapping_markdown, write_schema_files
+from docx_schema.mapping import (
+    parse_mapping_markdown,
+    propose_mapping,
+    render_mapping_markdown,
+    render_relationships_markdown,
+    write_schema_files,
+)
+from docx_schema.sources import read_relationships
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -684,15 +1123,20 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     propose = subparsers.add_parser("propose-mapping", help="Create a self-contained mapping markdown from a DOCX or SVG file.")
-    propose.add_argument("source", help="Path to source .docx or .svg")
+    propose.add_argument("source", help="Path to source .docx or .svg/.xml")
     propose.add_argument("--out", default="./mapping.md", help="Output mapping markdown path")
     propose.set_defaults(handler=_run_propose_mapping)
 
     create = subparsers.add_parser("create-schema", help="Create per-table schema files from a source DOCX/SVG plus reviewed mapping markdown.")
-    create.add_argument("source", help="Path to source .docx or .svg (leading @ allowed)")
+    create.add_argument("source", help="Path to source .docx or .svg/.xml (leading @ allowed)")
     create.add_argument("mapping", help="Path to mapping markdown (leading @ allowed)")
     create.add_argument("--out-dir", default="./schema", help="Output directory for schema markdown files")
     create.set_defaults(handler=_run_create_schema)
+
+    relationships = subparsers.add_parser("extract-relationships", help="Extract table relationships (SVG arrows) to a markdown + Mermaid ERD.")
+    relationships.add_argument("source", help="Path to source .svg/.xml (leading @ allowed)")
+    relationships.add_argument("--out", default="./relationships.md", help="Output relationships markdown path")
+    relationships.set_defaults(handler=_run_extract_relationships)
 
     return parser
 
@@ -737,6 +1181,19 @@ def _run_create_schema(args: argparse.Namespace) -> int:
     print(f"Wrote {len(written)} schema file(s) from {len(column_sets)} column set(s)")
     for path in written:
         print(path)
+    return 0
+
+
+def _run_extract_relationships(args: argparse.Namespace) -> int:
+    source_path = normalize_docx_path(args.source)
+    relationships = read_relationships(str(source_path))
+    text = render_relationships_markdown(relationships)
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(text, encoding="utf-8")
+
+    print(f"Wrote {len(relationships)} relationship(s)")
+    print(out_path)
     return 0
 
 

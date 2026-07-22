@@ -32,3 +32,11 @@ class TableSchema:
 class ColumnSet:
     table_names: list[str] = field(default_factory=list)
     pairs: list[tuple[str, str]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class Relationship:
+    source_table: str
+    source_column: str
+    target_table: str
+    target_column: str

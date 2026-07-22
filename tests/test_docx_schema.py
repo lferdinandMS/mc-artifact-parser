@@ -12,9 +12,12 @@ from docx_schema.mapping import (
     project_table,
     propose_mapping,
     render_mapping_markdown,
+    render_relationships_markdown,
     write_schema_files,
 )
-from docx_schema.models import SourceTable, TARGET_COLUMNS
+from docx_schema.models import Relationship, SourceTable, TARGET_COLUMNS
+from docx_schema.sources import read_relationships
+from docx_schema.sources.svg import extract_relationships
 
 
 def _docx_xml(tables: list[tuple[str, list[str], list[list[str]]]]) -> str:
@@ -493,58 +496,75 @@ class TestDocxSchema(unittest.TestCase):
 
 class TestSvgExtraction(unittest.TestCase):
     def _write_svg(self, path: Path, body: str) -> None:
-        xml = f'<svg xmlns="http://www.w3.org/2000/svg">{body}</svg>'
+        xml = f'<svg xmlns="http://www.w3.org/2000/svg" width="2050" height="4532">{body}</svg>'
         path.write_text(xml, encoding="utf-8")
 
-    def test_geometry_two_columns_extracts_column_type_pairs(self) -> None:
+    def test_grouped_tables_use_thtext_names_and_class_driven_cells(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            svg_path = Path(td) / "PSP Ledger.svg"
+            svg_path = Path(td) / "tables_connected.xml"
             body = (
-                '<text x="10" y="10">Column</text><text x="200" y="10">Type</text>'
-                '<text x="10" y="30">amount</text><text x="200" y="30">decimal</text>'
-                '<text x="10" y="50">currency</text><text x="200" y="50">string</text>'
+                '<g id="silver_psp_transaction">'
+                '<text x="37" y="190" class="thText">silver_psp_transaction</text>'
+                '<text x="37" y="207" class="headText">COLUMN</text>'
+                '<text x="298" y="207" class="headText">TYPE</text>'
+                '<text x="37" y="229" class="cell">transaction_id</text>'
+                '<text x="298" y="229" class="cell">string</text>'
+                '<text x="37" y="251" class="cell">gross_amount</text>'
+                '<text x="298" y="251" class="cell">decimal</text>'
+                "</g>"
+                '<g id="gold_psp_ledger">'
+                '<text x="557" y="190" class="thText">gold_psp_ledger</text>'
+                '<text x="557" y="207" class="headText">COLUMN</text>'
+                '<text x="818" y="207" class="headText">TYPE</text>'
+                '<text x="557" y="229" class="cell">ledger_id</text>'
+                '<text x="818" y="229" class="cell">string</text>'
+                "</g>"
             )
             self._write_svg(svg_path, body)
 
             column_sets = propose_mapping(str(svg_path))
-
-            self.assertEqual(column_sets[0].table_names, ["PSP Ledger"])
-            self.assertEqual(column_sets[0].pairs, [("Column", "Column"), ("Type", "Type")])
+            self.assertEqual(
+                column_sets[0].table_names,
+                ["silver_psp_transaction", "gold_psp_ledger"],
+            )
+            self.assertEqual(
+                column_sets[0].pairs,
+                [("COLUMN", "Column"), ("TYPE", "Type")],
+            )
 
             mapping = render_mapping_markdown(column_sets)
             with tempfile.TemporaryDirectory() as out_dir:
                 written = write_schema_files(str(svg_path), parse_mapping_markdown(mapping), out_dir)
-                self.assertEqual([path.name for path in written], ["PSP Ledger_schema.md"])
-                content = written[0].read_text(encoding="utf-8")
+                names = sorted(path.name for path in written)
+                self.assertEqual(
+                    names,
+                    ["gold_psp_ledger_schema.md", "silver_psp_transaction_schema.md"],
+                )
+                silver = next(p for p in written if p.name.startswith("silver")).read_text(encoding="utf-8")
 
-            self.assertIn("| amount | decimal |", content)
-            self.assertIn("| currency | string |", content)
+            self.assertIn("| transaction_id | string |", silver)
+            self.assertIn("| gross_amount | decimal |", silver)
 
-    def test_inline_label_value_text_nodes(self) -> None:
+    def test_ungrouped_svg_falls_back_to_single_table(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            svg_path = Path(td) / "inline.svg"
+            svg_path = Path(td) / "PSP Ledger.svg"
             body = (
-                '<text x="0" y="0">amount: decimal</text>'
-                '<text x="0" y="0">currency: string</text>'
+                '<text x="37" y="207" class="headText">COLUMN</text>'
+                '<text x="298" y="207" class="headText">TYPE</text>'
+                '<text x="37" y="229" class="cell">amount</text>'
+                '<text x="298" y="229" class="cell">decimal</text>'
             )
             self._write_svg(svg_path, body)
 
             column_sets = propose_mapping(str(svg_path))
-            with tempfile.TemporaryDirectory() as out_dir:
-                written = write_schema_files(
-                    str(svg_path), parse_mapping_markdown(render_mapping_markdown(column_sets)), out_dir
-                )
-                content = written[0].read_text(encoding="utf-8")
-
-            self.assertIn("| amount | decimal |", content)
-            self.assertIn("| currency | string |", content)
+            self.assertEqual(column_sets[0].table_names, ["PSP Ledger"])
 
     def test_rejects_doctype_in_svg(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             svg_path = Path(td) / "unsafe.svg"
             svg_path.write_text(
                 '<?xml version="1.0"?><!DOCTYPE svg><svg xmlns="http://www.w3.org/2000/svg">'
-                '<text x="0" y="0">a</text></svg>',
+                '<text x="0" y="0" class="cell">a</text></svg>',
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(ValueError, "disallowed XML declarations"):
@@ -556,6 +576,97 @@ class TestSvgExtraction(unittest.TestCase):
             svg_path.write_text("<root><text>a</text></root>", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "not an SVG file"):
                 propose_mapping(str(svg_path))
+
+
+class TestSvgRelationships(unittest.TestCase):
+    def _write_svg(self, path: Path, body: str) -> None:
+        xml = f'<svg xmlns="http://www.w3.org/2000/svg" width="2050" height="4532">{body}</svg>'
+        path.write_text(xml, encoding="utf-8")
+
+    def _fan_out_body(self) -> str:
+        return (
+            '<g id="silver">'
+            '<rect class="tbl" x="30" y="180" width="380" height="100"/>'
+            '<text x="37" y="190" class="thText">silver_psp_transaction</text>'
+            '<text x="37" y="229" class="cell">settlement_batch_id</text>'
+            '<text x="37" y="251" class="cell">gross_amount</text>'
+            "</g>"
+            '<g id="gold1">'
+            '<rect class="tbl" x="560" y="180" width="380" height="60"/>'
+            '<text x="567" y="190" class="thText">gold_net_revenue</text>'
+            '<text x="567" y="229" class="cell">batch_ref</text>'
+            "</g>"
+            '<g id="gold2">'
+            '<rect class="tbl" x="560" y="300" width="380" height="60"/>'
+            '<text x="567" y="310" class="thText">gold_settlement_revenue</text>'
+            '<text x="567" y="329" class="cell">batch_ref</text>'
+            "</g>"
+            '<line class="stub" x1="410" y1="229" x2="545" y2="229"/>'
+            '<line class="stub" x1="545" y1="229" x2="545" y2="329"/>'
+            '<path class="link" d="M545 229 L560 229"/>'
+            '<path class="link" d="M545 329 L560 329"/>'
+        )
+
+    def test_fan_out_arrows_yield_one_relationship_per_target(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            svg_path = Path(td) / "connected.svg"
+            self._write_svg(svg_path, self._fan_out_body())
+
+            relationships = extract_relationships(str(svg_path))
+            self.assertCountEqual(
+                relationships,
+                [
+                    Relationship(
+                        "silver_psp_transaction",
+                        "settlement_batch_id",
+                        "gold_net_revenue",
+                        "batch_ref",
+                    ),
+                    Relationship(
+                        "silver_psp_transaction",
+                        "settlement_batch_id",
+                        "gold_settlement_revenue",
+                        "batch_ref",
+                    ),
+                ],
+            )
+
+    def test_read_relationships_dispatches_svg(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            svg_path = Path(td) / "connected.svg"
+            self._write_svg(svg_path, self._fan_out_body())
+            self.assertEqual(len(read_relationships(str(svg_path))), 2)
+
+    def test_read_relationships_returns_empty_for_non_svg(self) -> None:
+        self.assertEqual(read_relationships("C:/nope/source.docx"), [])
+
+    def test_svg_without_connectors_has_no_relationships(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            svg_path = Path(td) / "isolated.svg"
+            body = (
+                '<g id="silver">'
+                '<rect class="tbl" x="30" y="180" width="380" height="60"/>'
+                '<text x="37" y="190" class="thText">silver_only</text>'
+                '<text x="37" y="229" class="cell">id</text>'
+                "</g>"
+            )
+            self._write_svg(svg_path, body)
+            self.assertEqual(extract_relationships(str(svg_path)), [])
+
+    def test_render_relationships_markdown_includes_table_and_mermaid(self) -> None:
+        relationships = [
+            Relationship("a", "a_id", "b", "a_ref"),
+        ]
+        text = render_relationships_markdown(relationships)
+        self.assertIn("| Source Table | Source Column | Target Table | Target Column |", text)
+        self.assertIn("| a | a_id | b | a_ref |", text)
+        self.assertIn("```mermaid", text)
+        self.assertIn("erDiagram", text)
+        self.assertIn('a ||--o{ b : "a_id -> a_ref"', text)
+
+    def test_render_relationships_markdown_empty(self) -> None:
+        text = render_relationships_markdown([])
+        self.assertIn("_No relationships found._", text)
 
 
 if __name__ == "__main__":
