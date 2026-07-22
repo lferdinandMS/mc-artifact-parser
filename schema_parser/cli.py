@@ -4,18 +4,17 @@ import argparse
 import sys
 from pathlib import Path
 
-from docx_schema.mapping import (
+from schema_parser.mapping import (
     parse_mapping_markdown,
     propose_mapping,
-    render_mapping_markdown,
-    render_relationships_markdown,
     write_schema_files,
 )
-from docx_schema.sources import read_relationships
+from schema_parser.render import render_mapping_markdown, render_relationships_markdown
+from schema_parser.sources import read_relationships
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m docx_schema", description="Create mapping and schema markdown files from DOCX or SVG sources.")
+    parser = argparse.ArgumentParser(prog="python -m schema_parser", description="Create mapping and schema markdown files from DOCX, SVG, or text/markdown sources.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     propose = subparsers.add_parser("propose-mapping", help="Create a self-contained mapping markdown from a DOCX or SVG file.")

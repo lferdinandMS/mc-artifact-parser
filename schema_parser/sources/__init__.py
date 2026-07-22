@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from docx_schema.models import Relationship, SourceTable
-from docx_schema.sources.base import SourceReader
-from docx_schema.sources.docx import DocxReader
-from docx_schema.sources.svg import SvgReader, extract_relationships
-from docx_schema.sources.text import TextSchemaReader
+from schema_parser.models import Relationship, SourceTable
+from schema_parser.sources.base import SourceReader
+from schema_parser.sources.docx import DocxReader
+from schema_parser.sources.svg_relationships import extract_relationships
+from schema_parser.sources.svg_tables import SvgReader
+from schema_parser.sources.text import TextSchemaReader
 
 # Registry of source readers, tried in order. DocxReader is the default
 # fallback so unrecognized files still get the clear DOCX error message.

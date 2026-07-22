@@ -11,6 +11,12 @@ walkthrough*/
 mappings/
 greenfield-run/
 
-# docx_schema generated outputs
+# schema_parser generated outputs
 schema/
 *-mapping.md
+
+# Python build artifacts
+build/
+dist/
+*.egg-info/
+.wheeltest/

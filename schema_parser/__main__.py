@@ -8,7 +8,7 @@ if __package__ in {None, ""}:
     if str(package_root) not in sys.path:
         sys.path.insert(0, str(package_root))
 
-from docx_schema.cli import main
+from schema_parser.cli import main
 
 
 if __name__ == "__main__":

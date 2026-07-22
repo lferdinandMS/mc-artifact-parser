@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from docx_schema.models import SourceTable
+from schema_parser.models import SourceTable
 
 MAX_SOURCE_BYTES = 10 * 1024 * 1024
 

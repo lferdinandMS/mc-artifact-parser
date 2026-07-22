@@ -1,6 +1,6 @@
 """Heuristic parsing of a single free-text column definition line.
 
-Harvested from the larger artifact parser so ``docx_schema`` can coerce
+Harvested from the larger artifact parser so ``schema_parser`` can coerce
 inconsistent, unstructured inputs (bullet lists, notes, plain text) into the
 same ``(name, type, nullable, primary key, foreign key, description)`` shape the
 mapping pipeline expects. Standard library only.

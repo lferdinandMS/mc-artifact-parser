@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "schema-parser"
+description = "Turn loosely structured source artifacts (DOCX, SVG, text/markdown) into reviewed column mappings and per-table schema markdown. Standard library only."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Mastercard Artifact Parser" }]
+keywords = ["schema", "mapping", "docx", "svg", "markdown", "data-dictionary"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Text Processing :: Markup",
+]
+dynamic = ["version"]
+dependencies = []
+
+[project.scripts]
+schema-parser = "schema_parser.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "schema_parser.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["schema_parser*"]
+exclude = ["tests*"]

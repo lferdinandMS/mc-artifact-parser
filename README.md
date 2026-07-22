@@ -1,192 +1,108 @@
 # mc-artifact-parser
-Use to parse artifacts containing limited schema guidance.
 
-## Python parser
+`schema_parser` is a small, self-contained Python package that turns loosely
+structured source artifacts into reviewed column mappings and per-table schema
+markdown. It has **no third-party dependencies** (standard library only), so the
+`schema_parser/` folder can be copied as-is into a customer environment.
 
-This repository includes a generalized Python artifact parser with pluggable adapters.
+## Workflow
 
-Current adapter support:
-- DOCX (`.docx`)
-- Markdown (`.md`)
-- Images (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.gif`, `.tif`, `.tiff`, `.webp`) via OCR
+The package drives a three-command, human-in-the-loop workflow:
 
-### Parse a schema artifact
+1. **`propose-mapping`** — read a source, group its tables by header signature,
+   and emit a crosswalk (`extracted column → target column`) for human review.
+2. **`create-schema`** — apply the reviewed mapping to the source and write one
+   `{table}_schema.md` per table.
+3. **`extract-relationships`** — (SVG only) read connector arrows between tables
+   and emit a relationships table plus a Mermaid `erDiagram`.
 
-```python
-from mc_artifact_parser import ArtifactParser
+Every stage downstream of extraction is source-agnostic. Extraction is handled by
+a per-source subpackage (`schema_parser/sources/`) where a registry tries each
+`SourceReader` in turn. Adding a new input type means writing one `SourceReader`
+and registering it — nothing else changes.
 
-result = ArtifactParser().parse("/path/to/schema.docx")
-for entity in result.entities:
-    print(entity.name)
-    print(entity.implied_tables)
-    print([(c.name, c.data_type, c.nullable, c.primary_key) for c in entity.columns])
-    print(entity.related_entities)
-    print(entity.open_questions)
-```
+## Supported sources
 
-Markdown files are parsed the same way — H2–H6 headings are treated as entity names:
+| Reader | Extensions | Notes |
+|---|---|---|
+| `DocxReader` | `.docx` | Default fallback; heading-styled paragraph before a table becomes its name. |
+| `SvgReader` | `.svg`, `.xml` | Class/layout-driven table extraction; also encodes table relationships as arrows. |
+| `TextSchemaReader` | `.txt`, `.md`, `.markdown` | Markdown pipe tables parsed literally; free-text/bullet column lines coerced onto the target columns. |
 
-```python
-result = ArtifactParser().parse("/path/to/schema.md")
-```
+Anything unrecognized falls through to the DOCX reader, which gives a clear
+"not a valid ZIP-based DOCX file" error.
 
-Image files are parsed through OCR first, then processed with the same schema rules:
+## Install / distribution
 
-```python
-result = ArtifactParser().parse("/path/to/schema.png")
-```
+The package is standard-library only, so it can be delivered two ways:
 
-For image parsing, install an OCR engine such as Tesseract. If you want to plug in
-your own OCR pipeline, pass a custom text extractor to `ImageAdapter`.
+- **Copy the folder** — drop `schema_parser/` onto the target (Python 3.10+) and
+  run `python -m schema_parser ...` from the parent directory. No pip, no network.
+- **Build a wheel** — from the repo root run `python -m build`, then
+  `pip install dist/schema_parser-*.whl` on the target. This installs the package
+  and a `schema-parser` console script.
 
-### Accumulate multiple inputs before rendering outputs
+See [schema_parser/DISTRIBUTION.md](schema_parser/DISTRIBUTION.md) for the full
+guide.
 
-Use `SchemaWorkbench` when you want to add several documents or images over time.
-The first phase is to review the per-table markdown bundle, and only after the
-collection is complete do you render a data dictionary or ERD:
-
-```python
-from mc_artifact_parser import SchemaWorkbench
-
-workbench = SchemaWorkbench()
-workbench.add("/path/to/customer.png")
-workbench.add("/path/to/order.png")
-
-table_docs = workbench.build_table_schema_markdowns()
-mapping_docs = workbench.build_mapping_markdowns()
-print(workbench.completeness_issues)
-print(workbench.generated_open_questions)
-print(table_docs)
-print(mapping_docs)
-print(workbench.build_data_dictionary())
-print(workbench.build_erd())
-```
-
-`build_table_schema_markdowns()` returns a dictionary of markdown file names to
-per-table schema markdown content. Each file is named from the entity name.
-
-`build_mapping_markdowns()` returns a dictionary of markdown file names to
-per-table human review mapping templates that preserve the parsed source values
-and leave the intended output structure for review.
-
-### Maintenance note
-
-When changing the portable docx_schema workflow or its CLI behavior, update [docx_schema/DISTRIBUTION.md](docx_schema/DISTRIBUTION.md) so the bundled documentation matches the implementation.
-
-### Agent workflow orchestration
-
-Use `SchemaWorkflowAgent` to run a staged human-in-the-loop workflow:
-
-```python
-from mc_artifact_parser import ArtifactParser, SchemaWorkflowAgent, SchemaWorkbench
-
-workbench = SchemaWorkbench(parser=ArtifactParser())
-agent = SchemaWorkflowAgent(workbench=workbench, output_root="review-bundle")
-
-agent.review_sources(["/path/to/schema.png"])
-agent.propose_mapping()
-agent.approve_mapping()
-agent.draft_outputs()
-agent.finalize_outputs()
-```
-
-Artifacts are written to these folders under `review-bundle`:
-- `session/` for source review, session mapping proposal, and persisted stage state
-- `mappings/` for per-table mapping files
-- `drafts/` for draft table schemas and draft data dictionary
-- `final/` for final ERD and final data dictionary
-
-Command-line usage:
+## Usage
 
 ```bash
-python -m mc_artifact_parser --sources /path/to/schema.md
+# DOCX source
+python -m schema_parser propose-mapping ./sample.docx --out ./mapping.md
+python -m schema_parser create-schema ./sample.docx ./mapping.md --out-dir ./schema
+
+# SVG source (same two commands; .svg or .xml)
+python -m schema_parser propose-mapping ./sample.svg --out ./svg-mapping.md
+python -m schema_parser create-schema ./sample.svg ./svg-mapping.md --out-dir ./schema
+
+# Text / Markdown source
+python -m schema_parser propose-mapping ./notes.md --out ./md-mapping.md
+python -m schema_parser create-schema ./notes.md ./md-mapping.md --out-dir ./schema
+
+# Extract table relationships (arrows) from an SVG diagram
+python -m schema_parser extract-relationships ./sample.svg --out ./relationships.md
 ```
 
-Slash workflow commands:
-
-```bash
-python -m mc_artifact_parser /mapping --sources /path/to/schema.png --output-root review-bundle
-```
-
-`/mapping` runs review, proposes mapping, approves mapping, and writes per-entity mapping files to `review-bundle/mappings/` in the mapping template format.
-
-After reviewer edits/finalizes mapping files, run extraction:
-
-```bash
-python -m mc_artifact_parser /extraction --output-root review-bundle
-```
-
-`/extraction` loads the finalized mapping files and applies the mapping contract when rendering the final data dictionary.
-
-To remove generated workflow output folders quickly:
-
-```bash
-python -m mc_artifact_parser /clean
-```
-
-`/clean` removes generated output directories such as `review-bundle`, `slash-workflow-demo`, and `walkthrough*` folders from the current working directory.
-
-Run specific stages explicitly:
-
-```bash
-python -m mc_artifact_parser --sources /path/to/schema.md --review-sources --propose-mapping
-python -m mc_artifact_parser --approve-mapping --draft-outputs --finalize
-```
-
----
-
-### Output renderers
-
-Three output renderers are available to format a parse result.
-
-#### Data dictionary (Markdown table)
+The library API mirrors the CLI:
 
 ```python
-from mc_artifact_parser import ArtifactParser, DataDictionaryOutput
+from schema_parser import (
+    propose_mapping,
+    render_mapping_markdown,
+    parse_mapping_markdown,
+    write_schema_files,
+    read_relationships,
+    render_relationships_markdown,
+)
 
-result = ArtifactParser().parse("/path/to/schema.docx")
-print(DataDictionaryOutput().render(result))
+column_sets = propose_mapping("/path/to/sample.docx")
+mapping_md = render_mapping_markdown(column_sets)
+
+# ...after human review of mapping_md...
+written = write_schema_files("/path/to/sample.docx", parse_mapping_markdown(mapping_md), "./schema")
+
+relationships = read_relationships("/path/to/sample.svg")
+print(render_relationships_markdown(relationships))
 ```
 
-Produces a Markdown document with a column table per entity, related-entity
-lists, and open questions.
+## Target columns
 
-#### ERD as a Mermaid diagram
+Every generated schema is projected onto a fixed set of target columns:
 
-```python
-from mc_artifact_parser import ArtifactParser, MermaidErdOutput
-
-result = ArtifactParser().parse("/path/to/schema.docx")
-print(MermaidErdOutput().render(result))
+```
+Column, Type, Nullable, Primary Key, Foreign Key, Details, Description, Source
 ```
 
-Produces a fenced `mermaid` code block containing an `erDiagram` with columns
-annotated as `PK` / `FK` and relationship lines derived from `related_entities`.
+## Tests
 
-#### Open questions list
-
-```python
-from mc_artifact_parser import ArtifactParser, OpenQuestionsOutput
-
-result = ArtifactParser().parse("/path/to/schema.docx")
-print(OpenQuestionsOutput().render(result))
+```powershell
+.\.venv\Scripts\python -m unittest discover -s tests
 ```
 
-Produces a Markdown list of all open questions grouped by global scope and entity.
+## Maintenance note
 
----
-
-### Physical schema — Unity Catalog
-
-Convert a parsed logical schema to Databricks Unity Catalog DDL:
-
-```python
-from mc_artifact_parser import ArtifactParser, UnityCatalogAdapter
-
-result = ArtifactParser().parse("/path/to/schema.docx")
-print(UnityCatalogAdapter().render(result))
-```
-
-Each entity becomes a `CREATE TABLE IF NOT EXISTS … USING DELTA;` statement.
-Logical types (`varchar`, `int`, `boolean`, …) are mapped to Unity Catalog SQL
-types; unknown types default to `STRING`.
+When changing the `schema_parser` workflow or its CLI behavior, update
+[schema_parser/DISTRIBUTION.md](schema_parser/DISTRIBUTION.md) so the distribution
+guide stays accurate. Bump `__version__` in
+[schema_parser/__init__.py](schema_parser/__init__.py) before building a new wheel.

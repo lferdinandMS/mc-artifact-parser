@@ -20,9 +20,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from docx_schema.models import SourceTable, TARGET_COLUMNS
-from docx_schema.sources.base import MAX_SOURCE_BYTES, entity_name_from_path
-from docx_schema.sources.text_columns import ParsedColumn, parse_column_line
+from schema_parser.models import SourceTable, TARGET_COLUMNS
+from schema_parser.sources.base import MAX_SOURCE_BYTES, entity_name_from_path
+from schema_parser.sources.text_columns import ParsedColumn, parse_column_line
 
 _HEADING = re.compile(r"^(#{1,6})\s+(.+)$")
 _ENTITY_PREFIX = re.compile(r"^(?:entity|table)\s*[:\-]\s*(.+)$", re.IGNORECASE)

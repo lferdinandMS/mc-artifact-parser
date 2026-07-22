@@ -6,19 +6,18 @@ import zipfile
 from html import escape as html_escape
 from pathlib import Path
 
-from docx_schema.cli import main
-from docx_schema.mapping import (
+from schema_parser.cli import main
+from schema_parser.mapping import (
     parse_mapping_markdown,
     project_table,
     propose_mapping,
-    render_mapping_markdown,
-    render_relationships_markdown,
     write_schema_files,
 )
-from docx_schema.models import Relationship, SourceTable, TARGET_COLUMNS
-from docx_schema.sources import read_relationships, read_tables
-from docx_schema.sources.svg import extract_relationships
-from docx_schema.sources.text_columns import parse_column_line
+from schema_parser.models import Relationship, SourceTable, TARGET_COLUMNS
+from schema_parser.render import render_mapping_markdown, render_relationships_markdown
+from schema_parser.sources import read_relationships, read_tables
+from schema_parser.sources.svg_relationships import extract_relationships
+from schema_parser.sources.text_columns import parse_column_line
 
 
 def _docx_xml(tables: list[tuple[str, list[str], list[list[str]]]]) -> str:
@@ -100,7 +99,7 @@ class TestDocxSchema(unittest.TestCase):
         self.assertIn("|  | Primary Key |", mapping)
 
     def test_direct_entrypoint_works_when_package_is_invoked_as_script(self) -> None:
-        package_dir = Path(__file__).resolve().parent.parent / "docx_schema"
+        package_dir = Path(__file__).resolve().parent.parent / "schema_parser"
         result = subprocess.run(
             [sys.executable, str(package_dir / "__main__.py"), "--help"],
             capture_output=True,

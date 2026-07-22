@@ -4,8 +4,8 @@ import re
 import zipfile
 from xml.etree import ElementTree as ET
 
-from docx_schema.models import SourceTable
-from docx_schema.sources.base import MAX_SOURCE_BYTES, local_name
+from schema_parser.models import SourceTable
+from schema_parser.sources.base import MAX_SOURCE_BYTES, local_name
 
 
 class DocxReader:

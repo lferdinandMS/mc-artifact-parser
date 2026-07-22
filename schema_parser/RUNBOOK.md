@@ -1,4 +1,4 @@
-# docx_schema Runbook
+# schema_parser Runbook
 
 ## Workflow
 
@@ -41,7 +41,7 @@ _None defined._
 _None defined._
 ```
 
-Concrete provenance/audit columns are supplied by the target adapter (platform layer), not by `docx_schema`.
+Concrete provenance/audit columns are supplied by the target adapter (platform layer), not by `schema_parser`.
 
 ### Provenance-column format recommendation template
 
